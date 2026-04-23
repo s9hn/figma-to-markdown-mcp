@@ -1,0 +1,40 @@
+{
+  "name": "figma-to-markdown-mcp",
+  "version": "0.2.0",
+  "description": "MCP server that compacts Figma MCP design context into implementation markdown.",
+  "type": "module",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "figma-to-markdown-mcp": "./src/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "figma",
+    "markdown",
+    "design",
+    "ai"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test",
+    "validate:flow": "node scripts/validate-flow.js",
+    "delegate:implementation": "node scripts/delegate-implementation.js"
+  },
+  "author": "s9hn",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/s9hn/figma-to-markdown-mcp.git"
+  },
+  "homepage": "https://github.com/s9hn/figma-to-markdown-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/s9hn/figma-to-markdown-mcp/issues"
+  }
+}

@@ -1,4 +1,7 @@
 # Logs
+.DS_Store
+.claude/
+WORKLOG.md
 logs
 *.log
 npm-debug.log*
@@ -81,6 +84,7 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
+tmp/
 
 # Gatsby files
 .cache/
