@@ -7,7 +7,7 @@ import { parseFigmaUrl } from "./url.js";
 
 const SERVER_INFO = {
   name: "figma-to-markdown",
-  version: "0.2.0",
+  version: "1.0.0",
 };
 
 const SUPPORTED_PROTOCOL_VERSIONS = [

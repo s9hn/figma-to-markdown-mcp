@@ -1,6 +1,6 @@
 {
   "name": "figma-to-markdown-mcp",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "MCP server that compacts Figma MCP design context into implementation markdown.",
   "type": "module",
   "files": [
