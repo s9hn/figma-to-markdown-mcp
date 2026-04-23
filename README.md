@@ -109,6 +109,16 @@ Config file: `.cursor/mcp.json`
 }
 ```
 
+### Codex CLI
+
+Config file: `~/.codex/config.toml` (global) or `.codex/config.toml` (project)
+
+```toml
+[mcp_servers.figma-to-markdown]
+command = "npx"
+args = ["-y", "figma-to-markdown-mcp"]
+```
+
 ---
 
 ## Usage
