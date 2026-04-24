@@ -186,7 +186,7 @@ Once registered, give your agent a Figma node URL and ask for an implementation.
 
 ## Version & License
 
-- Current version: **1.0.1**
+- Current version: **1.0.2**
 - License: [MIT](./LICENSE)
 - [Changelog](./CHANGELOG.md)
 - [Contributing](./CONTRIBUTING.md)

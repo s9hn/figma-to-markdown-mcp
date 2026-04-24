@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented here.
 
+## [1.0.2] - 2026-04-24
+
+Patch release to normalize npm publish metadata and remove publish-time package warnings.
+
+### Fixed
+- Normalized the npm `bin` entry to `src/index.js`
+- Normalized `repository.url` to the canonical `git+https` form expected by npm
+- Bumped package and runtime version strings to `1.0.2`
+- Updated repository docs for the `1.0.2` release
+
 ## [1.0.1] - 2026-04-24
 
 Patch release to align published version metadata and repository release notes.
