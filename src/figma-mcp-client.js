@@ -109,7 +109,7 @@ export async function fetchDesignContext(nodeId) {
     params: {
       protocolVersion: "2025-03-26",
       capabilities: {},
-      clientInfo: { name: "figma-to-markdown-mcp", version: "1.0.0" },
+      clientInfo: { name: "figma-to-markdown-mcp", version: "1.0.1" },
     },
   });
 

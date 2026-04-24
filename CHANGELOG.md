@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented here.
 
+## [1.0.1] - 2026-04-24
+
+Patch release to align published version metadata and repository release notes.
+
+### Changed
+- Bumped package and runtime version strings to `1.0.1`
+- Updated README version reference
+- Added the `1.0.1` changelog entry for repository release tracking
+
 ## [1.0.0] - 2026-04-23
 
 Initial public release.
