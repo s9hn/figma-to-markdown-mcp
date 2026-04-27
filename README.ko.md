@@ -2,7 +2,7 @@
 
 언어: [English](./README.md) | [한국어](./README.ko.md)
 
-현재 버전: `1.1.1`
+현재 버전: `2.0.0`
 
 `figma-to-markdown-mcp`는 Figma 링크 기반 작업을 위한 MCP 서버입니다. Figma 디자인 컨텍스트를 서버 내부에서 가져오고 압축한 뒤, 전체 upstream 페이로드 대신 축약된 Markdown을 호출한 에이전트에게 반환합니다.
 
