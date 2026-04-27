@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-04-27
+
+### Changed
+
+- Restored npm package metadata fields such as `repository`, `homepage`, `bugs`, `license`, `author`, and `engines` for cleaner package and registry presentation.
+- Stopped ignoring `AGENTS.md` and included the repository guidance file alongside the bridge release.
+- Restored a fuller repository `.gitignore` so local artifacts are filtered more consistently during development and release work.
+
 ## [1.1.0] - 2026-04-27
 
 ### Added

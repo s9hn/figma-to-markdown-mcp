@@ -7,7 +7,7 @@ import { figmaToMarkdown, parseFigmaNode } from "./parser.js";
 
 const server = new McpServer({
   name: "figma-to-markdown",
-  version: "1.1.0",
+  version: "1.1.1",
 }, {
   instructions:
     "When a user provides a Figma node URL or asks to implement a Figma design, call get_figma_as_markdown first. If that tool returns a bridge fallback handoff, immediately continue with the standard Figma MCP tools for the same node. Do not call upstream Figma MCP get_design_context directly unless the user explicitly asks for the raw Figma MCP output, the bridge returned a fallback handoff, or you are debugging this server.",

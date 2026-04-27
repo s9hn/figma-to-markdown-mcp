@@ -1,6 +1,6 @@
 {
   "name": "figma-to-markdown-mcp",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "MCP bridge that fetches Figma MCP design context internally and returns compacted Markdown for agents",
   "type": "module",
   "main": "dist/index.js",
@@ -21,6 +21,9 @@
     "design-to-code",
     "token-reduction"
   ],
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.10.0",
     "zod": "^3.22.0"
@@ -30,5 +33,15 @@
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   },
-  "files": ["dist", "CHANGELOG.md"]
+  "files": ["dist", "CHANGELOG.md"],
+  "author": "s9hn",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/s9hn/figma-to-markdown-mcp.git"
+  },
+  "homepage": "https://github.com/s9hn/figma-to-markdown-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/s9hn/figma-to-markdown-mcp/issues"
+  }
 }

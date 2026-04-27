@@ -1,6 +1,6 @@
 # figma-to-markdown-mcp
 
-Current version: `1.1.0`
+Current version: `1.1.1`
 
 `figma-to-markdown-mcp` is an MCP bridge that fetches Figma MCP context internally and returns compacted Markdown to the calling agent.
 

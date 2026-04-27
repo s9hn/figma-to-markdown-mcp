@@ -11,7 +11,7 @@ import {
 const DEFAULT_FIGMA_MCP_URL = "http://127.0.0.1:3845/mcp";
 const INTERNAL_CLIENT_INFO = {
   name: "figma-to-markdown-internal-client",
-  version: "1.1.0",
+  version: "1.1.1",
 };
 
 interface ParsedFigmaUrl {
