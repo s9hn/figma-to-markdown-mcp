@@ -1,6 +1,6 @@
 {
   "name": "figma-to-markdown-mcp",
-  "version": "1.1.1",
+  "version": "2.0.0",
   "description": "MCP bridge that fetches Figma MCP design context internally and returns compacted Markdown for agents",
   "type": "module",
   "main": "dist/index.js",
@@ -8,7 +8,7 @@
     "figma-to-markdown-mcp": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\" && tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "test": "node --import tsx --test test/*.test.ts",

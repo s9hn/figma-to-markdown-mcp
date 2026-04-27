@@ -1,140 +1,147 @@
 # figma-to-markdown-mcp
 
-Current version: `1.1.1`
+Languages: [English](./README.md) | [한국어](./README.ko.md)
 
-`figma-to-markdown-mcp` is an MCP bridge that fetches Figma MCP context internally and returns compacted Markdown to the calling agent.
+Current version: `2.0.0`
 
-The product goal is simple: when a developer pastes a Figma node URL into an agent prompt, the agent should consume the reduced Markdown from this server, not the raw upstream Figma payload.
+`figma-to-markdown-mcp` is an MCP server for Figma-link workflows. It fetches Figma design context internally, compacts it inside the server, and returns reduced Markdown to the calling agent instead of the full upstream payload.
 
-## Why This Exists
+## What It Is
 
-Figma MCP responses can be large enough to consume substantial model context. This server sits between the agent and Figma MCP, fetches the node context internally, compacts it, and only then returns the reduced output.
+This project is for teams that want agents to work from Figma node URLs without exposing the full upstream Figma MCP payload to the caller model whenever the bridge can safely handle the request.
 
-This means:
+The intended flow is simple:
 
-- raw upstream Figma MCP output stays inside this server process
-- the calling agent only spends tokens on the final compacted result
-- users can keep a simple workflow: install one MCP server and paste Figma links naturally
+1. A user gives an agent a Figma node URL.
+2. The agent calls `get_figma_as_markdown`.
+3. This server fetches Figma context internally.
+4. The server compacts the upstream result.
+5. The agent receives reduced Markdown and works from that output.
 
-## Architecture
+## Why Use It
+
+The main reason to use this server is token reduction.
+
+Raw Figma MCP responses can be large enough to consume a meaningful part of the caller model context before implementation even begins. This bridge keeps that upstream payload inside the server whenever possible, compacts it first, and only returns the reduced result to the agent.
+
+- Lower token usage for Figma-link prompts
+- Smaller model-context footprint before implementation starts
+- Cleaner implementation input for agents
+- Less raw upstream noise in caller context
+- A built-in fallback path when the bridge cannot safely complete
+
+## How It Works
+
+This server sits between your agent and the local Figma Desktop MCP server.
 
 ```text
 User prompt with Figma link
   -> Agent calls get_figma_as_markdown
-  -> figma-to-markdown-mcp connects to local Figma MCP
+  -> figma-to-markdown-mcp connects to local Figma Desktop MCP
   -> get_design_context / get_metadata
   -> internal compaction
   -> compacted Markdown returned to the agent
-  -> agent implements from the reduced result
 ```
 
-## Upstream Requirement
+The public entrypoint is `get_figma_as_markdown`.
 
-URL-based fetching uses the local Figma desktop MCP server.
+- `figma_url`: required full Figma node URL
+- `include_metadata`: optional, default `true`
+- `max_output_chars`: optional explicit output budget; if omitted, the bridge does not force truncation
 
-- Default upstream endpoint: `http://127.0.0.1:3845/mcp`
-- Override with env var: `FIGMA_MCP_URL`
-- In Figma Desktop, enable Dev Mode and turn on the desktop MCP server
+When the bridge succeeds, it returns compacted Markdown. When the bridge cannot safely fetch or compact the node, it returns a fallback handoff so the agent can continue with standard Figma MCP tools directly.
 
-## Install
+Example URL shape:
+
+`https://www.figma.com/design/FILE_KEY/FILE_NAME?node-id=NODE_ID&m=dev`
+
+## Requirements
+
+To use the Figma-link bridge flow, you need:
+
+- Figma Desktop
+- Dev Mode enabled in Figma Desktop
+- Desktop MCP server enabled in Figma Desktop
+- Node.js 18+
+
+Default upstream Figma MCP endpoint:
+
+`http://127.0.0.1:3845/mcp`
+
+Override with:
+
+`FIGMA_MCP_URL`
+
+## Installation
+
+Install globally:
 
 ```bash
 npm install -g figma-to-markdown-mcp
 ```
 
-## Tools
-
-### `get_figma_as_markdown`
-
-Use this first when the user provides a Figma node URL and asks to implement, inspect, or summarize that design.
-
-Parameters:
-
-- `figma_url`: full Figma node URL, for example `https://www.figma.com/design/qWVshatQ9eqoIn4fdEZqWy/SDG?node-id=25481-16119&m=dev`
-- `max_output_chars`: optional output budget for compacted design context, default `16000`
-- `include_metadata`: optional compacted `get_metadata` outline, default `true`
-
-Behavior:
-
-- accepts full Figma URLs, including prompt forms like `@https://...`
-- connects to local Figma MCP internally
-- calls `get_design_context` and optionally `get_metadata`
-- compacts upstream output before returning it
-- returns Markdown only, not the raw upstream MCP payload
-- if bridge fetch or compaction fails, returns a fallback handoff that tells the agent to continue with the standard Figma MCP directly
-
-### `figma_to_markdown`
-
-Legacy raw-payload tool.
-
-Parameters:
-
-- `figma_json`: raw Figma node JSON string
-- `max_depth`: optional traversal depth, default `5`
-
-Use this only when raw Figma JSON is already available and URL-based internal fetching is not needed.
-
-## Agent Guidance
-
-If your agent supports repo instructions, add rules equivalent to:
-
-1. If a prompt contains a Figma node URL, call `get_figma_as_markdown` before any direct Figma MCP tool.
-2. If `get_figma_as_markdown` returns a bridge fallback handoff, continue with the standard Figma MCP tools for the same node.
-3. Do not call upstream Figma MCP `get_design_context` directly unless the user explicitly asks for raw output, the bridge returned fallback, or you are debugging the bridge.
-4. Implement from the compacted Markdown returned by this server whenever the bridge succeeds.
-
-This repository also encodes that routing intent in:
-
-- server initialization instructions
-- `get_figma_as_markdown` tool description
-- [AGENTS.md](./AGENTS.md)
-
-## Verified Link Example
-
-The local bridge was verified against this live desktop-MCP link:
-
-`https://www.figma.com/design/qWVshatQ9eqoIn4fdEZqWy/SDG?node-id=25481-16119&m=dev`
-
-The bridge successfully connected to local Figma MCP, fetched the node, and returned compacted Markdown for `basic navi`.
-
-## Project Structure
-
-```text
-src/
-  index.ts          MCP server entry and tool registration
-  figma-mcp.ts      Internal MCP client bridge to local Figma MCP
-  mcp-compactor.ts  Compaction for Figma MCP text / metadata output
-  parser.ts         Raw figma_json -> Markdown conversion
-dist/               Compiled output
-```
-
-## Development
+Or run with `npx`:
 
 ```bash
-npm install
-npm run build
-npm run dev
+npx figma-to-markdown-mcp
 ```
 
-## Deployment
+## MCP Client Registration
 
-- `npm run build` generates `dist/`
-- `prepublishOnly` runs the build before publish
-- publish artifact is driven by `package.json#files`
+Register this server in your MCP client.
 
-Recommended release sync:
+Example using `npx`:
 
-1. Update source under `src/`
-2. Update `README.md`, `AGENTS.md`, and `CHANGELOG.md`
-3. Run `npm run build`
-4. Publish the package
+```json
+{
+  "mcpServers": {
+    "figma-to-markdown": {
+      "command": "npx",
+      "args": ["-y", "figma-to-markdown-mcp"]
+    }
+  }
+}
+```
 
-## Limitation
+Example using a global install:
 
-This server can strongly guide agents to prefer `get_figma_as_markdown`, but final tool selection still depends on the MCP host or agent. It cannot forcibly override host-side tool routing by itself.
+```json
+{
+  "mcpServers": {
+    "figma-to-markdown": {
+      "command": "figma-to-markdown-mcp",
+      "args": []
+    }
+  }
+}
+```
 
-When the bridge itself cannot safely fetch or compact a node, it returns a compact fallback handoff instead of leaking raw upstream payload through this server response.
+Your client may use JSON, TOML, or another config format, but the command registration model is the same.
 
-## Release Notes
+## How To Use It
 
-See [CHANGELOG.md](./CHANGELOG.md).
+1. Open Figma Desktop and enable Dev Mode and the desktop MCP server.
+2. Register `figma-to-markdown-mcp` in your MCP client.
+3. Give your agent a Figma node URL.
+4. Have the agent call `get_figma_as_markdown` first.
+5. Use the returned compacted Markdown for implementation, inspection, or summarization.
+6. If the server returns a fallback handoff, continue with the standard Figma MCP tools for the same node.
+
+In practice:
+
+- Small and medium components usually return compacted Markdown directly.
+- Large screens can still return larger output when needed.
+- Only set `max_output_chars` when you intentionally want a hard output budget.
+
+## Limitations
+
+- Final tool routing still depends on the MCP host or agent. This server can strongly guide usage, but it cannot forcibly override host-side routing.
+- When the bridge cannot safely complete a request, it returns a compact fallback handoff instead of passing raw upstream payloads through this server response.
+
+## Other Information
+
+- Release history: [CHANGELOG.md](./CHANGELOG.md)
+- Source repository: https://github.com/s9hn/figma-to-markdown-mcp
+- Contributions: issues and pull requests are welcome on GitHub
+- Issues: [GitHub Issues](https://github.com/s9hn/figma-to-markdown-mcp/issues)
+- License: MIT

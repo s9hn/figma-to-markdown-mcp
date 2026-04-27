@@ -67,6 +67,7 @@ test("getFigmaLinkAsMarkdown compacts upstream design context without leaking ve
 
   assert.equal(result.fallback, undefined);
   assert.match(result.markdown, /# Figma Context/);
+  assert.match(result.markdown, /## Node Outline/);
   assert.match(result.markdown, /## Design Context/);
   assert.match(result.markdown, /asset imgHero: \/assets\/hero\.png/);
   assert.doesNotMatch(result.markdown, /http:\/\/localhost:3845/);
@@ -153,6 +154,44 @@ test("getFigmaLinkAsMarkdown retries alternate node-id variants when upstream re
   assert.equal(result.fallback, undefined);
   assert.deepEqual(attemptedNodeIds, ["1-2", "1:2"]);
   assert.match(result.markdown, /Recovered via alternate node id/);
+});
+
+test("getFigmaLinkAsMarkdown does not force truncation when maxOutputChars is omitted", async () => {
+  const tailMarker = "TAIL_MARKER_SHOULD_STAY_VISIBLE";
+  const longDesignText = `<div>${"A".repeat(500)}${tailMarker}</div>`;
+  const result = await getFigmaLinkAsMarkdown({
+    figmaUrl: "https://www.figma.com/design/FILE123/Example?node-id=1-2",
+    runtime: {
+      connectFigmaClient: async () =>
+        createFakeConnection({
+          designText: longDesignText,
+          metadataText: '<FRAME name="LargeScreen" id="1:2" width="1440" height="3200" />',
+        }),
+    },
+  });
+
+  assert.equal(result.fallback, undefined);
+  assert.match(result.markdown, new RegExp(tailMarker));
+  assert.doesNotMatch(result.markdown, /Design context was truncated to the configured output budget/);
+});
+
+test("getFigmaLinkAsMarkdown truncates only when maxOutputChars is explicitly provided", async () => {
+  const tailMarker = "TAIL_MARKER_SHOULD_BE_TRUNCATED";
+  const longDesignText = `<div>${"B".repeat(500)}${tailMarker}</div>`;
+  const result = await getFigmaLinkAsMarkdown({
+    figmaUrl: "https://www.figma.com/design/FILE123/Example?node-id=1-2",
+    maxOutputChars: 120,
+    runtime: {
+      connectFigmaClient: async () =>
+        createFakeConnection({
+          designText: longDesignText,
+        }),
+    },
+  });
+
+  assert.equal(result.fallback, undefined);
+  assert.doesNotMatch(result.markdown, new RegExp(tailMarker));
+  assert.match(result.markdown, /Design context was truncated to the configured output budget/);
 });
 
 test("getFigmaLinkAsMarkdown returns upstream handoff fallback when design compaction fails", async () => {

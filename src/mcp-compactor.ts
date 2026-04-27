@@ -69,13 +69,20 @@ function extractXmlAttr(tag: string, name: string): string | undefined {
 
 export function compactDesignContext(
   source: string,
-  maxChars = 16000
+  maxChars?: number
 ): CompactedSection {
   const normalized = normalizeTextBlock(
     compactReactLikeDesignContext(stripOuterCodeFence(source))
   );
   if (!normalized) {
     return { text: "", truncated: false };
+  }
+
+  if (maxChars === undefined) {
+    return {
+      text: normalized,
+      truncated: false,
+    };
   }
 
   const compacted = truncateAtBoundary(normalized, maxChars);
@@ -87,7 +94,7 @@ export function compactDesignContext(
 
 export function compactMetadataOutline(
   xml: string,
-  maxLines = 120
+  maxLines?: number
 ): CompactedSection {
   const normalized = normalizeTextBlock(xml).replace(/>\s*</g, ">\n<");
   if (!normalized) {
@@ -138,7 +145,7 @@ export function compactMetadataOutline(
       `${"  ".repeat(depth)}- ${label} (${type})${details.length ? ` [${details.join(", ")}]` : ""}`
     );
 
-    if (lines.length >= maxLines) {
+    if (maxLines !== undefined && lines.length >= maxLines) {
       truncated = true;
       break;
     }

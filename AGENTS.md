@@ -31,7 +31,7 @@
 - If raw Figma data stays inside this server process, agent token usage is paid only on the final compacted output.
 
 ## Architecture Notes
-- This project supports both raw `figma_json` compaction and link-based internal fetching through a local Figma MCP server.
+- This project uses link-based internal fetching through a local Figma MCP server.
 - The implementation model is: this process is an MCP server outwardly and an MCP client inwardly.
 - Do not return raw Figma JSON or large upstream MCP payloads to the caller except for tightly scoped debugging.
 - Parser/compaction logic should stay separate from transport and Figma-fetching logic.

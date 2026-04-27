@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.0] - 2026-04-27
+
+### Changed
+
+- Stopped exposing the legacy `figma_to_markdown` raw-JSON tool and narrowed the public MCP surface to the URL-based `get_figma_as_markdown` workflow.
+- Changed `max_output_chars` so truncation is opt-in instead of enforced by default, allowing large screens to return larger compacted output when needed.
+- Reworked the README around the user workflow, token-reduction value, architecture, setup, and MCP registration guidance.
+- Updated AGENTS guidance to describe the bridge as a link-based internal-fetching server.
+- Cleaned the build so `dist/` is removed before compilation, preventing deleted artifacts such as the old parser output from being published.
+
+### Fixed
+
+- Added `npm ci` to the GitHub Actions CI workflow so tests run with installed dependencies.
+- Added tests covering the new no-default-truncation behavior and explicit truncation behavior when `max_output_chars` is set.
+
 ## [1.1.1] - 2026-04-27
 
 ### Changed

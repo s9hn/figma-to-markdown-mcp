@@ -443,45 +443,6 @@ function buildMarkdown(
   return `${markdown}\n\n---\n> ${formatReductionLabel(rawChars, markdown.length)}`;
 }
 
-function buildBestEffortMarkdown(
-  parsed: ParsedFigmaUrl,
-  figmaMcpUrl: string,
-  metadataOutline: string,
-  metadataTruncated: boolean,
-  designContext: string,
-  designContextTruncated: boolean,
-  rawChars: number,
-  notes: string[]
-): string {
-  const withMetadata = buildMarkdown(
-    parsed,
-    figmaMcpUrl,
-    metadataOutline,
-    metadataTruncated,
-    designContext,
-    designContextTruncated,
-    rawChars,
-    [...notes]
-  );
-
-  if (rawChars <= 0 || withMetadata.length <= rawChars || !metadataOutline) {
-    return withMetadata;
-  }
-
-  const withoutMetadata = buildMarkdown(
-    parsed,
-    figmaMcpUrl,
-    "",
-    false,
-    designContext,
-    designContextTruncated,
-    rawChars,
-    [...notes]
-  );
-
-  return withoutMetadata.length < withMetadata.length ? withoutMetadata : withMetadata;
-}
-
 export async function getFigmaLinkAsMarkdown(
   options: GetFigmaMarkdownOptions
 ): Promise<GetFigmaMarkdownResult> {
@@ -555,7 +516,7 @@ export async function getFigmaLinkAsMarkdown(
     try {
       compactedDesign = runtime.compactDesignContext(
         designRaw,
-        options.maxOutputChars ?? 16000
+        options.maxOutputChars
       );
     } catch (error) {
       return buildUpstreamFallbackResult(
@@ -574,7 +535,7 @@ export async function getFigmaLinkAsMarkdown(
     }
 
     const rawChars = metadataRaw.length + designRaw.length;
-    const markdown = buildBestEffortMarkdown(
+    const markdown = buildMarkdown(
       parsed,
       figmaMcpUrl,
       compactedMetadata.text,
