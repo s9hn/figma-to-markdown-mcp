@@ -1,5 +1,3 @@
-@@README_KO_START@@
-
 # figma-to-markdown-mcp
 
 언어: [English](./README.md) | [한국어](./README.ko.md)
@@ -30,7 +28,7 @@ Figma MCP의 원본 응답은 크기가 커서, 실제 구현을 시작하기도
 - 구현을 시작하기 전 모델 컨텍스트가 차지되는 비중을 줄일 수 있습니다
 - 에이전트가 구현에 활용하기 좋은 형태로 입력을 정리할 수 있습니다
 - 호출 모델의 컨텍스트에 불필요한 upstream 원본 정보가 들어가는 것을 줄일 수 있습니다
-- 브리지가 안전하게 처리하지 못하는 경우에도 이어서 작업할 수 있는 fallback 경로가 내장되어 있습니다
+- 브리지가 안전하게 처리하지 못하는 경우에도 이어서 작업할 수 있는 fallback 경로가 내장되어 있습니다  
 
 ## 동작 방식
 
@@ -147,5 +145,3 @@ npx figma-to-markdown-mcp
 - 기여: GitHub에서 이슈와 Pull Request를 환영합니다
 - 이슈: [GitHub Issues](https://github.com/s9hn/figma-to-markdown-mcp/issues)
 - 라이선스: MIT
-
-@@README_KO_END@@
