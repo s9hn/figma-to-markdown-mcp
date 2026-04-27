@@ -1,37 +1,44 @@
 # Changelog
 
-All notable changes to this project will be documented here.
+All notable changes to this project will be documented in this file.
 
-## [1.0.2] - 2026-04-24
+## [1.1.0] - 2026-04-27
 
-Patch release to normalize npm publish metadata and remove publish-time package warnings.
+### Added
 
-### Fixed
-- Normalized the npm `bin` entry to `src/index.js`
-- Normalized `repository.url` to the canonical `git+https` form expected by npm
-- Bumped package and runtime version strings to `1.0.2`
-- Updated repository docs for the `1.0.2` release
+- Added `get_figma_as_markdown`, a URL-based MCP tool that accepts a full Figma node link, calls a local Figma MCP server internally, and returns compacted Markdown instead of raw upstream payloads.
+- Added an internal Figma MCP client with Streamable HTTP first and SSE fallback support for local desktop MCP connections.
+- Added compactors for Figma MCP `get_design_context` and `get_metadata` responses so upstream output can be reduced before it reaches the calling agent.
+- Added server-level routing instructions so compatible hosts are told to prefer `get_figma_as_markdown` for Figma links.
+- Added explicit bridge fallback handoff output for `get_figma_as_markdown` so agents can continue with the standard Figma MCP tools when internal fetch or compaction cannot safely complete.
+- Added structured fallback metadata in the tool response, including suggested upstream tool calls and node-id retry variants.
+- Added automated tests covering the compacted-success path, optional metadata failure handling, and upstream/compaction fallback behavior.
+
+### Changed
+
+- Updated package metadata, AGENTS guidance, and README usage/deployment docs to reflect the internal Figma MCP bridge architecture.
+- Improved design-context compaction by stripping verbose upstream attributes and shortening localhost asset references.
+- Updated server instructions, AGENTS guidance, and README routing docs so agents know to use direct Figma MCP only after the bridge returns fallback.
+- Strengthened compaction by stripping more verbose passthrough attributes such as `data-testid`, `data-figma-name`, empty `style={{}}`, and empty `className=""`.
+- Made `get_metadata` truly optional during bridge fetch so metadata failure no longer aborts successful design-context compaction.
 
 ## [1.0.1] - 2026-04-24
 
-Patch release to align published version metadata and repository release notes.
-
 ### Changed
-- Bumped package and runtime version strings to `1.0.1`
-- Updated README version reference
-- Added the `1.0.1` changelog entry for repository release tracking
 
-## [1.0.0] - 2026-04-23
+- Simplified `max_depth` handling by relying on the Zod default value.
+- Split JSON parse errors and parser errors into separate failure paths.
+- Updated size summary text to report `Expanded ~X%` when the output is larger than the input.
+- Limited published package contents to `dist` through the `files` field.
 
-Initial public release.
+### Fixed
 
-### Added
-- `get_design_context_compact` tool — fetches Figma design context and returns compact implementation markdown
-- Automatic compaction of raw React/Tailwind passthrough from Figma MCP output
-- Layout, text, typography, asset, and implementation note extraction
-- `## QA Flags` section surfaced when compaction confidence is low
-- Raw fallback returned when compaction fails, so agents are never left without data
-- `include_stats` parameter for token size reporting
-- Support for both Content-Length and JSON-line MCP transport framing
-- Branch URL support for Figma branch links
-- Node.js 18+ compatibility
+- Added Figma node shape validation before conversion to prevent invalid payloads from producing misleading output.
+- Normalized inline text so line breaks and quotes do not break the generated Markdown structure.
+- Preserved zero-valued layout and visual properties such as `gap`, `padding`, `radius`, and `opacity`.
+
+### Repository
+
+- Added a repository `.gitignore` for local-only files.
+- Removed local-only workspace artifacts and permission settings from the project tree.
+- Added repository docs for current scope and release tracking.

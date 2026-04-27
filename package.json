@@ -1,40 +1,34 @@
 {
   "name": "figma-to-markdown-mcp",
-  "version": "1.0.2",
-  "description": "MCP server that compacts Figma MCP design context into implementation markdown.",
+  "version": "1.1.0",
+  "description": "MCP bridge that fetches Figma MCP design context internally and returns compacted Markdown for agents",
   "type": "module",
-  "files": [
-    "src",
-    "README.md",
-    "LICENSE"
-  ],
+  "main": "dist/index.js",
   "bin": {
-    "figma-to-markdown-mcp": "src/index.js"
+    "figma-to-markdown-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "mcp",
     "figma",
     "markdown",
-    "design",
-    "ai"
+    "design-to-code",
+    "token-reduction"
   ],
-  "engines": {
-    "node": ">=18"
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.0",
+    "zod": "^3.22.0"
   },
-  "scripts": {
-    "start": "node src/index.js",
-    "test": "node --test",
-    "validate:flow": "node scripts/validate-flow.js",
-    "delegate:implementation": "node scripts/delegate-implementation.js"
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
   },
-  "author": "s9hn",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/s9hn/figma-to-markdown-mcp.git"
-  },
-  "homepage": "https://github.com/s9hn/figma-to-markdown-mcp#readme",
-  "bugs": {
-    "url": "https://github.com/s9hn/figma-to-markdown-mcp/issues"
-  }
+  "files": ["dist", "CHANGELOG.md"]
 }
