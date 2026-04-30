@@ -12,19 +12,19 @@ test("buildImplementationDelegationPrompt includes the normalized node id in the
   assert.match(prompt, /Node ID: 25481:16139/u);
 });
 
-test("buildImplementationDelegationPrompt includes markdown-first implementation rules", () => {
+test("buildImplementationDelegationPrompt includes compact-context-first implementation rules", () => {
   const prompt = buildImplementationDelegationPrompt({
     figmaUrl:
       "https://www.figma.com/design/ExampleFileKey123/Example-File?node-id=25481-16139&m=dev",
     targetPackage:
       "com.example.feature.preview",
-    componentName: "ExampleBasicNavi",
+    componentName: "ExampleComponent",
   });
 
   assert.match(prompt, /Node ID: 25481:16139/u);
   assert.match(prompt, /Target package: com\.example\.feature\.preview/u);
-  assert.match(prompt, /get_design_context_compact/u);
-  assert.match(prompt, /Use the returned markdown document as the primary implementation context\./u);
+  assert.match(prompt, /get_figma_compact_context/u);
+  assert.match(prompt, /Use the returned compact context as the primary implementation input\./u);
   assert.match(prompt, /Treat screenshots as visual reference only\./u);
 });
 

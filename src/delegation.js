@@ -28,17 +28,17 @@ export function buildImplementationDelegationPrompt(options) {
   lines.push(
     "",
     "Execution Rules",
-    "- Read the node through `get_design_context_compact` before any raw Figma MCP design-context call.",
-    "- Use the returned markdown document as the primary implementation context.",
-    "- Only call raw Figma MCP tools when the compact markdown is missing a fact required for implementation.",
+    "- Read the node through `get_figma_compact_context` before any raw Figma MCP design-context call.",
+    "- Use the returned compact context as the primary implementation input.",
+    "- Only call raw Figma MCP tools when the compact context is missing a fact required for implementation.",
     "- Preserve layout, text, metadata, typography, assets, and node traceability while adapting to the target codebase.",
-    "- Treat screenshots as visual reference only. Prefer the markdown document for layout, spacing, typography, color, visibility, and component metadata.",
+    "- Treat screenshots as visual reference only. Prefer the compact context for layout, spacing, typography, color, visibility, and component metadata.",
     "- Do not invent assets, text, spacing, or dimensions.",
     "",
     "Deliverables",
     "- Implement the UI in the target package.",
     "- Add preview or example wiring if the repository pattern expects it.",
-    "- Report which files changed and whether the upstream markdown required manual interpretation."
+    "- Report which files changed and whether the compact context required manual interpretation."
   );
 
   return lines.join("\n");

@@ -1,23 +1,24 @@
 {
-  "name": "figma-to-markdown-mcp",
-  "version": "2.0.0",
-  "description": "MCP bridge that fetches Figma MCP design context internally and returns compacted Markdown for agents",
+  "name": "figma-compaction-mcp",
+  "version": "3.0.0",
+  "description": "MCP bridge that prunes Figma design context into compact plain-text context for agents",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "figma-to-markdown-mcp": "dist/index.js"
+    "figma-compaction-mcp": "dist/index.js"
   },
   "scripts": {
-    "build": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\" && tsc",
+    "build": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\" && tsc && node --input-type=module -e \"import { cpSync } from 'node:fs'; for (const file of ['design-context-analyzer.js', 'compact-context.js']) cpSync('src/' + file, 'dist/' + file);\"",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "test": "node --import tsx --test test/*.test.ts",
+    "test": "node --import tsx --test test/*.test.js test/*.test.ts",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
     "mcp",
     "figma",
-    "markdown",
+    "compaction",
+    "compact-context",
     "design-to-code",
     "token-reduction"
   ],
@@ -30,18 +31,22 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "tiktoken": "^1.0.22",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   },
-  "files": ["dist", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
   "author": "s9hn",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/s9hn/figma-to-markdown-mcp.git"
+    "url": "git+https://github.com/s9hn/figma-compaction-mcp.git"
   },
-  "homepage": "https://github.com/s9hn/figma-to-markdown-mcp#readme",
+  "homepage": "https://github.com/s9hn/figma-compaction-mcp#readme",
   "bugs": {
-    "url": "https://github.com/s9hn/figma-to-markdown-mcp/issues"
+    "url": "https://github.com/s9hn/figma-compaction-mcp/issues"
   }
 }

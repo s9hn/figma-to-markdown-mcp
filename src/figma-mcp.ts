@@ -1,17 +1,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import {
-  compactDesignContext,
-  compactMetadataOutline,
-  formatReductionLabel,
-  inferCodeFence,
-} from "./mcp-compactor.js";
+import { serializeDesignContextToCompactContext } from "./compact-context.js";
 
 const DEFAULT_FIGMA_MCP_URL = "http://127.0.0.1:3845/mcp";
 const INTERNAL_CLIENT_INFO = {
-  name: "figma-to-markdown-internal-client",
-  version: "1.1.1",
+  name: "figma-compaction-internal-client",
+  version: "3.0.0",
 };
 
 interface ParsedFigmaUrl {
@@ -48,10 +43,8 @@ interface ConnectedClient {
   transport: unknown;
 }
 
-interface FigmaMarkdownRuntime {
+interface FigmaCompactionRuntime {
   connectFigmaClient: (figmaMcpUrl: string) => Promise<ConnectedClient>;
-  compactDesignContext: typeof compactDesignContext;
-  compactMetadataOutline: typeof compactMetadataOutline;
 }
 
 export interface SuggestedUpstreamToolCall {
@@ -60,11 +53,44 @@ export interface SuggestedUpstreamToolCall {
   note?: string;
 }
 
-export interface UpstreamFallback {
-  required: true;
-  reason: string;
-  nodeIdVariants: string[];
-  suggestedTools: SuggestedUpstreamToolCall[];
+export type BridgeStatus = "ok" | "partial_node" | "truncated";
+
+export interface ParentCandidate {
+  nodeId?: string;
+  name?: string;
+  type: string;
+  width?: number;
+  height?: number;
+}
+
+export interface NodeDiagnostics {
+  nodeId: string | null;
+  name: string | null;
+  type: string | null;
+  width: number | null;
+  height: number | null;
+  x: number | null;
+  y: number | null;
+  directChildCount: number | null;
+  descendantCount: number | null;
+  textNodeCount: number | null;
+  topLevelChildTypes: string[];
+  firstTextNames: string[];
+  looksPartial: boolean;
+  reasons: string[];
+  parentCandidates: ParentCandidate[];
+  parentCandidatesUnavailableReason?: string;
+}
+
+interface MetadataNode {
+  type: string;
+  id: string | null;
+  name: string | null;
+  width: number | null;
+  height: number | null;
+  x: number | null;
+  y: number | null;
+  children: MetadataNode[];
 }
 
 function hasTerminateSession(
@@ -78,25 +104,60 @@ function hasTerminateSession(
   );
 }
 
-export interface GetFigmaMarkdownOptions {
+export interface GetFigmaCompactContextOptions {
   figmaUrl: string;
   includeMetadata?: boolean;
   maxOutputChars?: number;
   figmaMcpUrl?: string;
-  runtime?: Partial<FigmaMarkdownRuntime>;
+  runtime?: Partial<FigmaCompactionRuntime>;
+  mode?: CompactMode;
+  task?: CompactTask;
+  includeAssets?: boolean;
+  includeTextSpecs?: boolean;
+  includeTraceIds?: boolean;
 }
 
-export interface GetFigmaMarkdownResult {
-  markdown: string;
-  rawChars: number;
-  outputChars: number;
-  source: {
+export type CompactMode = "minimal" | "balanced" | "debug";
+export type CompactTask = "implement" | "inspect" | "summarize";
+
+export interface CompactContextFallback {
+  reason: string;
+  recommendedTool: "get_design_context";
+  suggestedCalls: SuggestedUpstreamToolCall[];
+}
+
+export interface GetFigmaCompactContextResult {
+  status: "ok" | "fallback";
+  format: "compact-context";
+  version: "1";
+  mode: CompactMode;
+  task: CompactTask;
+  summary: string;
+  content: string;
+  stats: {
+    rawChars: number;
+    compactChars: number;
+    reductionPct?: number;
+  };
+  trace?: {
     figmaUrl: string;
     fileKey?: string;
-    nodeId?: string;
-    figmaMcpUrl: string;
+    nodeId: string;
+    upstreamTools: string[];
   };
-  fallback?: UpstreamFallback;
+  warnings: string[];
+  nodeDiagnostics?: NodeDiagnostics;
+  fallback?: CompactContextFallback;
+}
+
+interface PreparedBridgeContext {
+  parsed: ParsedFigmaUrl;
+  figmaMcpUrl: string;
+  rawChars: number;
+  contentBlocks: string[];
+  filteredMetadataBlocks: string[];
+  notes: string[];
+  nodeDiagnostics?: NodeDiagnostics;
 }
 
 function parseFigmaUrl(figmaUrl: string): ParsedFigmaUrl {
@@ -185,12 +246,10 @@ async function listAllTools(client: FigmaMcpClientLike): Promise<ToolDefinition[
 }
 
 function createRuntime(
-  overrides: Partial<FigmaMarkdownRuntime> | undefined
-): FigmaMarkdownRuntime {
+  overrides: Partial<FigmaCompactionRuntime> | undefined
+): FigmaCompactionRuntime {
   return {
     connectFigmaClient,
-    compactDesignContext,
-    compactMetadataOutline,
     ...overrides,
   };
 }
@@ -262,8 +321,8 @@ async function callToolWithFallback(
         name,
         arguments: candidateArgs,
       })) as CallToolResultLike;
-      if (result.isError) {
-        const errorText = extractToolText(result) || "Unknown tool error";
+      const errorText = extractToolText(result) || "Unknown tool error";
+      if (result.isError || isMissingNodeMessage(errorText)) {
         throw new Error(errorText);
       }
       return result;
@@ -291,13 +350,22 @@ function stringifyContentItem(item: unknown): string | null {
   return null;
 }
 
-function extractToolText(result: CallToolResultLike): string {
-  const textBlocks =
+function extractToolTextBlocks(result: CallToolResultLike): string[] {
+  return (
     result.content
       ?.map((item) => stringifyContentItem(item))
-      .filter((value): value is string => Boolean(value)) ?? [];
+      .filter((value): value is string => Boolean(value))
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0) ?? []
+  );
+}
 
-  return textBlocks.join("\n\n");
+function extractToolText(result: CallToolResultLike): string {
+  return extractToolTextBlocks(result).join("\n\n");
+}
+
+function isMissingNodeMessage(text: string): boolean {
+  return /^No node could be found for the provided nodeId:/u.test(text.trim());
 }
 
 function describeError(error: unknown): string {
@@ -324,137 +392,572 @@ function buildSuggestedUpstreamToolCalls(parsed: ParsedFigmaUrl): SuggestedUpstr
   ];
 }
 
-function buildUpstreamFallbackMarkdown(
+function filterMetadataBlocks(blocks: string[]): string[] {
+  return blocks.filter(
+    (block) =>
+      !block.startsWith(
+        "IMPORTANT: After you call this tool, you MUST call get_design_context"
+      )
+  );
+}
+
+function extractQuotedAttribute(attrs: string, name: string): string | null {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const match = attrs.match(new RegExp(`${escapedName}\\s*=\\s*"([^"]*)"`, "u"));
+  return match?.[1] ?? null;
+}
+
+function parseNumericAttribute(attrs: string, name: string): number | null {
+  const value = extractQuotedAttribute(attrs, name);
+  if (value === null) {
+    return null;
+  }
+
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function createMetadataNode(type: string, attrs: string): MetadataNode {
+  return {
+    type,
+    id: extractQuotedAttribute(attrs, "id"),
+    name: extractQuotedAttribute(attrs, "name"),
+    width: parseNumericAttribute(attrs, "width"),
+    height: parseNumericAttribute(attrs, "height"),
+    x: parseNumericAttribute(attrs, "x"),
+    y: parseNumericAttribute(attrs, "y"),
+    children: [],
+  };
+}
+
+function parseMetadataTree(block: string): MetadataNode | null {
+  const roots: MetadataNode[] = [];
+  const stack: MetadataNode[] = [];
+  const pattern = /<\/?([a-z_]+)\b([^>]*)>/giu;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(block)) !== null) {
+    const rawTag = match[0];
+    const type = match[1].toLowerCase();
+    const attrs = match[2] ?? "";
+
+    if (rawTag.startsWith("</")) {
+      while (stack.length > 0) {
+        const current = stack.pop();
+        if (current?.type === type) {
+          break;
+        }
+      }
+      continue;
+    }
+
+    const node = createMetadataNode(type, attrs);
+    if (stack.length > 0) {
+      stack[stack.length - 1].children.push(node);
+    } else {
+      roots.push(node);
+    }
+
+    if (!rawTag.endsWith("/>")) {
+      stack.push(node);
+    }
+  }
+
+  return roots[0] ?? null;
+}
+
+function countMetadataNodes(root: MetadataNode): number {
+  return 1 + root.children.reduce((sum, child) => sum + countMetadataNodes(child), 0);
+}
+
+function countTextNodes(root: MetadataNode): number {
+  const self = root.type === "text" ? 1 : 0;
+  return self + root.children.reduce((sum, child) => sum + countTextNodes(child), 0);
+}
+
+function collectTextNames(root: MetadataNode): string[] {
+  const names: string[] = [];
+
+  const visit = (node: MetadataNode) => {
+    if (node.type === "text" && node.name) {
+      names.push(node.name);
+    }
+    for (const child of node.children) {
+      visit(child);
+    }
+  };
+
+  visit(root);
+  return [...new Set(names)];
+}
+
+function analyzeNodeDiagnostics(metadataBlocks: string[]): NodeDiagnostics | undefined {
+  for (const block of metadataBlocks) {
+    const root = parseMetadataTree(block);
+    if (!root) {
+      continue;
+    }
+
+    const directChildCount = root.children.length;
+    const descendantCount = Math.max(0, countMetadataNodes(root) - 1);
+    const textNodeCount = countTextNodes(root);
+    const topLevelChildTypes = [...new Set(root.children.map((child) => child.type))];
+    const firstTextNames = collectTextNames(root).slice(0, 3);
+    const reasons: string[] = [];
+
+    const singleTextChild =
+      directChildCount === 1 &&
+      root.children[0]?.type === "text" &&
+      descendantCount === 1;
+    const smallTextBand =
+      root.width !== null &&
+      root.height !== null &&
+      root.width >= 240 &&
+      root.width <= 480 &&
+      root.height <= 120;
+
+    let looksPartial = false;
+
+    if (root.type === "text") {
+      looksPartial = true;
+      reasons.push("Selected node is a text layer rather than a container root.");
+    }
+
+    if (smallTextBand) {
+      looksPartial = true;
+      reasons.push(`Selected frame is compact (${root.width} x ${root.height}) and may be a localized sub-block.`);
+    }
+
+    if (singleTextChild && smallTextBand) {
+      looksPartial = true;
+      reasons.push("Selected subtree contains one direct text child and no additional structure.");
+    }
+
+    if (looksPartial && textNodeCount > 0) {
+      reasons.push(`Visible text nodes in subtree: ${textNodeCount}.`);
+    }
+
+    return {
+      nodeId: root.id,
+      name: root.name,
+      type: root.type,
+      width: root.width,
+      height: root.height,
+      x: root.x,
+      y: root.y,
+      directChildCount,
+      descendantCount,
+      textNodeCount,
+      topLevelChildTypes,
+      firstTextNames,
+      looksPartial,
+      reasons: [...new Set(reasons)],
+      parentCandidates: [],
+      parentCandidatesUnavailableReason: looksPartial
+        ? "Upstream `get_metadata` only exposed the selected subtree, so ancestor frame candidates were not available."
+        : undefined,
+    };
+  }
+
+  return undefined;
+}
+
+function findMetadataPath(root: MetadataNode, targetNodeId: string): MetadataNode[] | null {
+  if (root.id === targetNodeId) {
+    return [root];
+  }
+
+  for (const child of root.children) {
+    const path = findMetadataPath(child, targetNodeId);
+    if (path) {
+      return [root, ...path];
+    }
+  }
+
+  return null;
+}
+
+function toParentCandidate(node: MetadataNode): ParentCandidate | null {
+  if (!["frame", "instance", "symbol", "component", "component-set", "section"].includes(node.type)) {
+    return null;
+  }
+
+  return {
+    nodeId: node.id ?? undefined,
+    name: node.name ?? undefined,
+    type: node.type,
+    width: node.width ?? undefined,
+    height: node.height ?? undefined,
+  };
+}
+
+function buildParentCandidatesFromPath(path: MetadataNode[]): ParentCandidate[] {
+  const target = path[path.length - 1];
+  const ancestors = path.slice(0, -1).reverse();
+  const candidates: ParentCandidate[] = [];
+
+  for (const node of ancestors) {
+    const candidate = toParentCandidate(node);
+    if (!candidate) {
+      continue;
+    }
+
+    if (candidate.nodeId && candidate.nodeId === target.id) {
+      continue;
+    }
+
+    candidates.push(candidate);
+    if (candidates.length >= 5) {
+      break;
+    }
+  }
+
+  return candidates;
+}
+
+function isProbeContainerType(type: string): boolean {
+  return ["frame", "instance", "symbol", "component", "component-set", "section", "canvas"].includes(type);
+}
+
+function shouldProbeContainerCandidate(
+  node: MetadataNode,
+  targetNodeId: string,
+  diagnostics: NodeDiagnostics
+): boolean {
+  if (!node.id || node.id === targetNodeId || !isProbeContainerType(node.type)) {
+    return false;
+  }
+
+  if (diagnostics.width !== null && node.width !== null && node.width < diagnostics.width) {
+    return false;
+  }
+
+  if (diagnostics.height !== null && node.height !== null && node.height < diagnostics.height) {
+    return false;
+  }
+
+  return true;
+}
+
+function collectProbeCandidateIds(
+  root: MetadataNode,
+  targetNodeId: string,
+  diagnostics: NodeDiagnostics,
+  limit: number
+): string[] {
+  const queue = [...root.children];
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+
+  while (queue.length > 0 && candidates.length < limit) {
+    const node = queue.shift();
+    if (!node) {
+      continue;
+    }
+
+    if (shouldProbeContainerCandidate(node, targetNodeId, diagnostics)) {
+      seen.add(node.id as string);
+      candidates.push(node.id as string);
+    }
+
+    if (node.type === "canvas" || node.type === "section") {
+      for (const child of node.children) {
+        if (child.id && !seen.has(child.id)) {
+          queue.push(child);
+        }
+      }
+    }
+  }
+
+  return candidates;
+}
+
+async function probeCandidateContainersForPath(
+  client: FigmaMcpClientLike,
+  metadataTool: ToolDefinition,
+  parsed: ParsedFigmaUrl,
+  diagnostics: NodeDiagnostics,
+  targetNodeId: string,
+  initialCandidateIds: string[]
+): Promise<{ parentCandidates: ParentCandidate[] | null; probedCount: number }> {
+  const queue = initialCandidateIds.map((nodeId) => ({ nodeId, depth: 1 }));
+  const seen = new Set(initialCandidateIds);
+  let probedCount = 0;
+  const maxProbes = 8;
+  const maxDepth = 2;
+  const maxChildCandidatesPerProbe = 6;
+
+  while (queue.length > 0 && probedCount < maxProbes) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+
+    probedCount += 1;
+
+    try {
+      const candidateArgs = buildToolArgs(metadataTool, { ...parsed, nodeId: current.nodeId });
+      const result = await callToolWithFallback(
+        client,
+        metadataTool,
+        "get_metadata",
+        candidateArgs
+      );
+      const blocks = extractToolTextBlocks(result);
+
+      for (const block of blocks) {
+        const root = parseMetadataTree(block);
+        if (!root) {
+          continue;
+        }
+
+        const path = findMetadataPath(root, targetNodeId);
+        if (path && path.length >= 2) {
+          const parentCandidates = buildParentCandidatesFromPath(path);
+          if (parentCandidates.length > 0) {
+            return { parentCandidates, probedCount };
+          }
+        }
+
+        if (current.depth >= maxDepth) {
+          continue;
+        }
+
+        for (const candidateId of collectProbeCandidateIds(
+          root,
+          targetNodeId,
+          diagnostics,
+          maxChildCandidatesPerProbe
+        )) {
+          if (seen.has(candidateId)) {
+            continue;
+          }
+
+          seen.add(candidateId);
+          queue.push({ nodeId: candidateId, depth: current.depth + 1 });
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return { parentCandidates: null, probedCount };
+}
+
+async function enrichParentCandidates(
+  client: FigmaMcpClientLike,
+  metadataTool: ToolDefinition | undefined,
+  parsed: ParsedFigmaUrl,
+  diagnostics: NodeDiagnostics
+): Promise<NodeDiagnostics> {
+  if (!metadataTool || !parsed.nodeId || diagnostics.parentCandidates.length > 0) {
+    return diagnostics;
+  }
+
+  const targetNodeId = parsed.nodeId.replace(/-/g, ":");
+  const hitCanvasIds: string[] = [];
+  let probedContainerCount = 0;
+
+  for (let index = 1; index <= 10; index += 1) {
+    const canvasNodeId = `0:${index}`;
+
+    try {
+      const canvasArgs = buildToolArgs(metadataTool, { ...parsed, nodeId: canvasNodeId });
+      const result = await callToolWithFallback(
+        client,
+        metadataTool,
+        "get_metadata",
+        canvasArgs
+      );
+      const blocks = extractToolTextBlocks(result);
+
+      if (blocks.length === 0 || blocks.every((block) => isMissingNodeMessage(block))) {
+        continue;
+      }
+
+      hitCanvasIds.push(canvasNodeId);
+
+      for (const block of blocks) {
+        const root = parseMetadataTree(block);
+        if (!root) {
+          continue;
+        }
+
+        const path = findMetadataPath(root, targetNodeId);
+        if (!path || path.length < 2) {
+          continue;
+        }
+
+        const parentCandidates = buildParentCandidatesFromPath(path);
+        if (parentCandidates.length === 0) {
+          continue;
+        }
+
+        return {
+          ...diagnostics,
+          parentCandidates,
+          parentCandidatesUnavailableReason: undefined,
+        };
+      }
+
+      const initialCandidateIds = blocks
+        .map((block) => parseMetadataTree(block))
+        .filter((root): root is MetadataNode => Boolean(root))
+        .flatMap((root) => collectProbeCandidateIds(root, targetNodeId, diagnostics, 6));
+
+      if (initialCandidateIds.length === 0) {
+        continue;
+      }
+
+      const probed = await probeCandidateContainersForPath(
+        client,
+        metadataTool,
+        parsed,
+        diagnostics,
+        targetNodeId,
+        initialCandidateIds
+      );
+      probedContainerCount += probed.probedCount;
+
+      if (probed.parentCandidates && probed.parentCandidates.length > 0) {
+        return {
+          ...diagnostics,
+          parentCandidates: probed.parentCandidates,
+          parentCandidatesUnavailableReason: undefined,
+        };
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return {
+    ...diagnostics,
+    parentCandidatesUnavailableReason:
+      hitCanvasIds.length > 0
+        ? probedContainerCount > 0
+          ? `Canvas metadata was available and ${probedContainerCount} related container candidate${probedContainerCount === 1 ? " was" : "s were"} probed, but no ancestor path to the selected node could be reconstructed.`
+          : "Canvas metadata was available, but no ancestor path to the selected node could be reconstructed."
+        : "Canvas-level metadata was not available, so ancestor frame candidates could not be reconstructed.",
+  };
+}
+
+function buildResultSummary(
+  status: BridgeStatus,
+  diagnostics: NodeDiagnostics | undefined,
+  truncated: boolean
+): string {
+  const parts: string[] = [];
+  if (diagnostics?.name) {
+    parts.push(diagnostics.name);
+  }
+  if (diagnostics?.type) {
+    parts.push(diagnostics.type);
+  }
+  if (diagnostics && diagnostics.width !== null && diagnostics.height !== null) {
+    parts.push(`${diagnostics.width} x ${diagnostics.height}`);
+  }
+  if (diagnostics && diagnostics.directChildCount !== null) {
+    parts.push(`${diagnostics.directChildCount} direct child${diagnostics.directChildCount === 1 ? "" : "ren"}`);
+  }
+  if (diagnostics && diagnostics.textNodeCount !== null) {
+    parts.push(`${diagnostics.textNodeCount} text node${diagnostics.textNodeCount === 1 ? "" : "s"}`);
+  }
+  if (status === "partial_node") {
+    parts.push("looks partial");
+  }
+  if (truncated) {
+    parts.push("truncated");
+  }
+
+  return parts.length > 0 ? parts.join(" / ") : "Compact context ready.";
+}
+
+function calculateReductionPct(rawChars: number, compactChars: number): number | undefined {
+  if (rawChars <= 0) {
+    return undefined;
+  }
+
+  return Number((((rawChars - compactChars) / rawChars) * 100).toFixed(2));
+}
+
+function truncateCompactDocument(
+  content: string,
+  maxChars: number | undefined
+): { text: string; truncated: boolean; omittedChars: number; reason?: string } {
+  if (maxChars === undefined || content.length <= maxChars) {
+    return { text: content, truncated: false, omittedChars: 0 };
+  }
+
+  const truncationLine = "\nwa|truncated|Output was truncated to the configured output budget.";
+  const budget = Math.max(0, maxChars - truncationLine.length);
+  const candidate = content.slice(0, budget);
+  const lineBoundary = candidate.lastIndexOf("\n");
+  const cutoff = lineBoundary >= Math.floor(budget * 0.75) ? lineBoundary : candidate.length;
+  const text = `${candidate.slice(0, cutoff).trimEnd()}${truncationLine}`;
+
+  return {
+    text,
+    truncated: true,
+    omittedChars: Math.max(0, content.length - text.length),
+    reason: "Output was truncated to the configured `max_output_chars` budget.",
+  };
+}
+
+function buildCompactFallbackResult(
   parsed: ParsedFigmaUrl,
   figmaMcpUrl: string,
   reason: string,
-  fallback: UpstreamFallback
-): string {
-  const lines: string[] = [];
-  lines.push("# Figma Bridge Fallback");
-  lines.push(`- source: ${parsed.figmaUrl}`);
-  if (parsed.fileKey) lines.push(`- file_key: ${parsed.fileKey}`);
-  if (parsed.nodeId) lines.push(`- node_id: ${parsed.nodeId}`);
-  lines.push(`- attempted_via: ${figmaMcpUrl}`);
-  lines.push(`- reason: ${reason}`);
-  lines.push("- action: call the standard Figma MCP directly for this node.");
-  lines.push("");
-  lines.push("## Next Step");
-  lines.push(
-    "The bridge did not safely produce compacted Markdown, so this response is handing off to the normal Figma MCP flow instead of returning raw upstream payload from inside the bridge."
-  );
-  lines.push("");
-  lines.push("## Suggested Upstream Calls");
-  for (const toolCall of fallback.suggestedTools) {
-    lines.push(`### ${toolCall.name}`);
-    if (toolCall.note) {
-      lines.push(toolCall.note);
-    }
-    lines.push("```json");
-    lines.push(JSON.stringify(toolCall.arguments, null, 2));
-    lines.push("```");
-    lines.push("");
-  }
-  lines.push("## Retry Note");
-  lines.push(
-    `- If the direct Figma MCP cannot resolve the node, retry nodeId using one of: ${fallback.nodeIdVariants.join(", ")}`
-  );
-  lines.push("- This fallback keeps raw upstream payload out of this bridge response.");
-  return lines.join("\n").trimEnd();
-}
-
-function buildUpstreamFallbackResult(
-  parsed: ParsedFigmaUrl,
-  figmaMcpUrl: string,
-  reason: string
-): GetFigmaMarkdownResult {
-  const nodeIdVariants = parsed.nodeId ? buildNodeIdVariants(parsed.nodeId) : [];
-  const fallback: UpstreamFallback = {
-    required: true,
+  mode: CompactMode,
+  task: CompactTask
+): GetFigmaCompactContextResult {
+  const suggestedCalls = buildSuggestedUpstreamToolCalls(parsed);
+  const fallback: CompactContextFallback = {
     reason,
-    nodeIdVariants,
-    suggestedTools: buildSuggestedUpstreamToolCalls(parsed),
+    recommendedTool: "get_design_context",
+    suggestedCalls,
   };
-  const markdown = buildUpstreamFallbackMarkdown(parsed, figmaMcpUrl, reason, fallback);
+  const content = [
+    `src|figma|get_design_context|${parsed.nodeId ?? "-"}|${parsed.fileKey ?? "-"}`,
+    `wa|fallback|${reason}`,
+  ].join("\n");
+
   return {
-    markdown,
-    rawChars: 0,
-    outputChars: markdown.length,
-    source: {
+    status: "fallback",
+    format: "compact-context",
+    version: "1",
+    mode,
+    task,
+    summary: `Fallback required: ${reason}`,
+    content,
+    stats: {
+      rawChars: 0,
+      compactChars: content.length,
+    },
+    trace: parsed.nodeId ? {
       figmaUrl: parsed.figmaUrl,
       fileKey: parsed.fileKey,
       nodeId: parsed.nodeId,
-      figmaMcpUrl,
-    },
+      upstreamTools: ["get_design_context", "get_metadata"],
+    } : undefined,
+    warnings: ["fallback"],
     fallback,
   };
 }
 
-function buildMarkdown(
+async function prepareBridgeContext(
   parsed: ParsedFigmaUrl,
-  figmaMcpUrl: string,
-  metadataOutline: string,
-  metadataTruncated: boolean,
-  designContext: string,
-  designContextTruncated: boolean,
-  rawChars: number,
-  notes: string[]
-): string {
-  const lines: string[] = [];
-  lines.push("# Figma Context");
-  lines.push(`- source: ${parsed.figmaUrl}`);
-  if (parsed.fileKey) lines.push(`- file_key: ${parsed.fileKey}`);
-  if (parsed.nodeId) lines.push(`- node_id: ${parsed.nodeId}`);
-  lines.push(`- fetched_via: ${figmaMcpUrl}`);
-  lines.push(
-    "- upstream_note: raw Figma MCP payload stayed inside this server; only the compacted Markdown below is returned."
-  );
-
-  if (metadataOutline) {
-    lines.push("");
-    lines.push("## Node Outline");
-    lines.push(metadataOutline);
-  }
-
-  if (designContext) {
-    lines.push("");
-    lines.push("## Design Context");
-    lines.push(`\`\`\`${inferCodeFence(designContext)}`);
-    lines.push(designContext);
-    lines.push("```");
-  }
-
-  if (metadataTruncated) {
-    notes.push("Metadata outline was truncated to keep the response compact.");
-  }
-  if (designContextTruncated) {
-    notes.push("Design context was truncated to the configured output budget.");
-  }
-
-  if (notes.length) {
-    lines.push("");
-    lines.push("## Notes");
-    for (const note of notes) {
-      lines.push(`- ${note}`);
-    }
-  }
-
-  const markdown = lines.join("\n");
-  return `${markdown}\n\n---\n> ${formatReductionLabel(rawChars, markdown.length)}`;
-}
-
-export async function getFigmaLinkAsMarkdown(
-  options: GetFigmaMarkdownOptions
-): Promise<GetFigmaMarkdownResult> {
-  const parsed = parseFigmaUrl(options.figmaUrl);
-  const figmaMcpUrl = options.figmaMcpUrl ?? process.env.FIGMA_MCP_URL ?? DEFAULT_FIGMA_MCP_URL;
-  const runtime = createRuntime(options.runtime);
-
+  options: GetFigmaCompactContextOptions
+): Promise<PreparedBridgeContext> {
   if (!parsed.nodeId) {
     throw new Error("Figma URL must include a node-id query parameter.");
   }
 
+  const figmaMcpUrl = options.figmaMcpUrl ?? process.env.FIGMA_MCP_URL ?? DEFAULT_FIGMA_MCP_URL;
+  const runtime = createRuntime(options.runtime);
   let connection: ConnectedClient | undefined;
+
   try {
     connection = await runtime.connectFigmaClient(figmaMcpUrl);
     const tools = await listAllTools(connection.client);
@@ -463,7 +966,6 @@ export async function getFigmaLinkAsMarkdown(
 
     const designTool = toolsByName.get("get_design_context");
     const metadataTool = toolsByName.get("get_metadata");
-
     const baseArgs = buildToolArgs(designTool, parsed);
     const designResult = await callToolWithFallback(
       connection.client,
@@ -471,19 +973,15 @@ export async function getFigmaLinkAsMarkdown(
       "get_design_context",
       baseArgs
     );
-    const designRaw = extractToolText(designResult);
-    if (!designRaw.trim()) {
-      return buildUpstreamFallbackResult(
-        parsed,
-        figmaMcpUrl,
-        "Upstream Figma MCP returned no usable text design context for compaction."
-      );
+    const contentBlocks = extractToolTextBlocks(designResult);
+    if (contentBlocks.length === 0) {
+      throw new Error("Upstream Figma MCP returned no usable text design context for compaction.");
     }
 
-    let metadataRaw = "";
+    let metadataBlocks: string[] = [];
     if (options.includeMetadata !== false) {
       if (!metadataTool) {
-        notes.push("Upstream Figma MCP did not expose `get_metadata`, so the node outline was omitted.");
+        notes.push("Upstream Figma MCP did not expose `get_metadata`, so metadata-derived node summary was omitted.");
       } else {
         try {
           const metadataArgs = buildToolArgs(metadataTool, parsed);
@@ -493,9 +991,9 @@ export async function getFigmaLinkAsMarkdown(
             "get_metadata",
             metadataArgs
           );
-          metadataRaw = extractToolText(metadataResult);
-          if (!metadataRaw.trim()) {
-            notes.push("Upstream `get_metadata` returned no usable text, so the node outline was omitted.");
+          metadataBlocks = extractToolTextBlocks(metadataResult);
+          if (metadataBlocks.length === 0) {
+            notes.push("Upstream `get_metadata` returned no usable text, so metadata-derived node summary was omitted.");
           }
         } catch (error) {
           notes.push(`Upstream \`get_metadata\` failed and was omitted: ${describeError(error)}`);
@@ -503,67 +1001,146 @@ export async function getFigmaLinkAsMarkdown(
       }
     }
 
-    let compactedMetadata = { text: "", truncated: false };
-    if (metadataRaw.trim()) {
-      try {
-        compactedMetadata = runtime.compactMetadataOutline(metadataRaw);
-      } catch (error) {
-        notes.push(`Metadata compaction failed and was omitted: ${describeError(error)}`);
+    const designRaw = contentBlocks.join("\n\n");
+    const metadataRaw = metadataBlocks.join("\n\n");
+    const rawChars = metadataRaw.length + designRaw.length;
+    const filteredMetadataBlocks = filterMetadataBlocks(metadataBlocks);
+    let nodeDiagnostics = analyzeNodeDiagnostics(filteredMetadataBlocks);
+
+    if (nodeDiagnostics?.looksPartial) {
+      nodeDiagnostics = await enrichParentCandidates(
+        connection.client,
+        metadataTool,
+        parsed,
+        nodeDiagnostics
+      );
+    }
+
+    if (nodeDiagnostics?.looksPartial) {
+      notes.push(`Selected node may be a partial implementation root: ${nodeDiagnostics.reasons.join(" ")}`);
+      if (nodeDiagnostics.parentCandidates.length > 0) {
+        notes.push(
+          `Parent frame candidates: ${nodeDiagnostics.parentCandidates
+            .map((candidate) => {
+              const size =
+                candidate.width !== undefined && candidate.height !== undefined
+                  ? ` (${candidate.width} x ${candidate.height})`
+                  : "";
+              return `${candidate.name ?? candidate.type}${candidate.nodeId ? ` [${candidate.nodeId}]` : ""}${size}`;
+            })
+            .join(", ")}`
+        );
+      }
+      if (nodeDiagnostics.parentCandidatesUnavailableReason) {
+        notes.push(nodeDiagnostics.parentCandidatesUnavailableReason);
       }
     }
 
-    let compactedDesign;
-    try {
-      compactedDesign = runtime.compactDesignContext(
-        designRaw,
-        options.maxOutputChars
-      );
-    } catch (error) {
-      return buildUpstreamFallbackResult(
-        parsed,
-        figmaMcpUrl,
-        `Compaction failed inside the bridge: ${describeError(error)}`
-      );
-    }
-
-    if (!compactedDesign.text.trim()) {
-      return buildUpstreamFallbackResult(
-        parsed,
-        figmaMcpUrl,
-        "Compaction produced no usable design context."
-      );
-    }
-
-    const rawChars = metadataRaw.length + designRaw.length;
-    const markdown = buildMarkdown(
+    return {
       parsed,
       figmaMcpUrl,
-      compactedMetadata.text,
-      compactedMetadata.truncated,
-      compactedDesign.text,
-      compactedDesign.truncated,
       rawChars,
-      notes
-    );
+      contentBlocks,
+      filteredMetadataBlocks,
+      notes,
+      nodeDiagnostics,
+    };
+  } finally {
+    await closeClientQuietly(connection);
+  }
+}
+
+export async function getFigmaCompactContext(
+  options: GetFigmaCompactContextOptions
+): Promise<GetFigmaCompactContextResult> {
+  const parsed = parseFigmaUrl(options.figmaUrl);
+  const figmaMcpUrl = options.figmaMcpUrl ?? process.env.FIGMA_MCP_URL ?? DEFAULT_FIGMA_MCP_URL;
+  const mode = options.mode ?? "balanced";
+  const task = options.task ?? "implement";
+
+  try {
+    const prepared = await prepareBridgeContext(parsed, options);
+    const serializerWarnings = mode === "debug"
+      ? prepared.notes
+      : prepared.nodeDiagnostics?.looksPartial
+        ? ["Selected node may be a partial implementation root."]
+        : [];
+    let compactBase: string;
+    try {
+      compactBase = serializeDesignContextToCompactContext({
+        fileKey: prepared.parsed.fileKey ?? "",
+        nodeId: prepared.parsed.nodeId ?? "",
+        contentBlocks: prepared.contentBlocks,
+        metadataBlocks: prepared.filteredMetadataBlocks,
+        mode,
+        task,
+        includeAssets: options.includeAssets,
+        includeTextSpecs: options.includeTextSpecs,
+        includeTraceIds: options.includeTraceIds,
+        warningLines: serializerWarnings,
+      });
+    } catch (error) {
+      return buildCompactFallbackResult(
+        parsed,
+        figmaMcpUrl,
+        `Compaction failed inside the bridge: ${describeError(error)}`,
+        mode,
+        task
+      );
+    }
+
+    if (!compactBase.trim()) {
+      return buildCompactFallbackResult(
+        parsed,
+        figmaMcpUrl,
+        "Compaction produced no usable design context.",
+        mode,
+        task
+      );
+    }
+
+    const truncatedCompact = truncateCompactDocument(compactBase, options.maxOutputChars);
+    const warnings = [
+      ...(prepared.nodeDiagnostics?.looksPartial ? ["partial_node"] : []),
+      ...(truncatedCompact.truncated ? ["truncated"] : []),
+    ];
+    const compactStatus: BridgeStatus = prepared.nodeDiagnostics?.looksPartial
+      ? "partial_node"
+      : truncatedCompact.truncated
+        ? "truncated"
+        : "ok";
 
     return {
-      markdown,
-      rawChars,
-      outputChars: markdown.length,
-      source: {
+      status: "ok",
+      format: "compact-context",
+      version: "1",
+      mode,
+      task,
+      summary: buildResultSummary(compactStatus, prepared.nodeDiagnostics, truncatedCompact.truncated),
+      content: truncatedCompact.text,
+      stats: {
+        rawChars: prepared.rawChars,
+        compactChars: truncatedCompact.text.length,
+        reductionPct: calculateReductionPct(prepared.rawChars, truncatedCompact.text.length),
+      },
+      trace: parsed.nodeId ? {
         figmaUrl: parsed.figmaUrl,
         fileKey: parsed.fileKey,
         nodeId: parsed.nodeId,
-        figmaMcpUrl,
-      },
+        upstreamTools: prepared.filteredMetadataBlocks.length > 0
+          ? ["get_design_context", "get_metadata"]
+          : ["get_design_context"],
+      } : undefined,
+      warnings,
+      nodeDiagnostics: prepared.nodeDiagnostics,
     };
   } catch (error) {
-    return buildUpstreamFallbackResult(
+    return buildCompactFallbackResult(
       parsed,
       figmaMcpUrl,
-      `${describeError(error)} If you're using the desktop Figma MCP, make sure Figma Desktop is open and the local MCP server is enabled at ${figmaMcpUrl}.`
+      `${describeError(error)} If you're using the desktop Figma MCP, make sure Figma Desktop is open and the local MCP server is enabled at ${figmaMcpUrl}.`,
+      mode,
+      task
     );
-  } finally {
-    await closeClientQuietly(connection);
   }
 }

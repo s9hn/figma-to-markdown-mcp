@@ -1,75 +1,7 @@
 // HTML void elements — self-closing by spec, no closing tag in JSX output from Figma MCP.
 const VOID_TAGS = new Set(["img", "input", "br", "hr", "meta", "link"]);
 
-export function serializeDesignContextToMarkdown(options) {
-  const fileKey = options?.fileKey;
-  const nodeId = options?.nodeId;
-  const contentBlocks = normalizeStringArray(options?.contentBlocks);
-  const metadataBlocks = normalizeStringArray(options?.metadataBlocks);
-  const supplementTools = normalizeStringArray(options?.supplementTools);
-
-  if (typeof fileKey !== "string" || fileKey.trim() === "") {
-    throw new Error("`fileKey` must be a non-empty string.");
-  }
-
-  if (typeof nodeId !== "string" || nodeId.trim() === "") {
-    throw new Error("`nodeId` must be a non-empty string.");
-  }
-
-  if (contentBlocks.length === 0) {
-    throw new Error("At least one design-context block is required.");
-  }
-
-  const analysis = analyzeDesignContext({
-    contentBlocks,
-    metadataBlocks,
-  });
-
-  const lines = [
-    "# Figma Design Context",
-    "",
-    "## Source",
-    "- provider: `figma-mcp`",
-    "- transformed-by: `figma-to-markdown`",
-    "- primary tool: `get_design_context`",
-    supplementTools.length > 0
-      ? `- supplements: ${supplementTools.map((tool) => `\`${tool}\``).join(", ")}`
-      : "- supplements: none",
-    `- node-id: \`${nodeId}\``,
-    `- file-key: \`${fileKey}\``,
-    "- mode: compact implementation handoff",
-    "- raw upstream code: omitted by default to reduce agent input size",
-  ];
-
-  const nodeSummary = buildNodeSummaryLines(analysis.metadataSummary, analysis.componentName);
-  if (nodeSummary.length > 0) {
-    lines.push("", "## Node Summary", ...nodeSummary);
-  }
-
-  if (analysis.elementSpecLines.length > 0) {
-    lines.push("", "## Compact Element Spec", ...analysis.elementSpecLines);
-  }
-
-  if (analysis.textSpecLines.length > 0) {
-    lines.push("", "## Text Spec", ...analysis.textSpecLines);
-  }
-
-  if (analysis.assetLines.length > 0) {
-    lines.push("", "## Asset Spec", ...analysis.assetLines);
-  }
-
-  if (analysis.noteLines.length > 0) {
-    lines.push("", "## Preserved Notes", ...analysis.noteLines);
-  }
-
-  if (analysis.warningLines.length > 0) {
-    lines.push("", "## QA Flags", ...analysis.warningLines);
-  }
-
-  return lines.join("\n");
-}
-
-function analyzeDesignContext({ contentBlocks, metadataBlocks }) {
+export function analyzeDesignContext({ contentBlocks, metadataBlocks }) {
   const codeBlocks = [];
   const noteBlocks = [];
 
@@ -90,10 +22,8 @@ function analyzeDesignContext({ contentBlocks, metadataBlocks }) {
   return {
     metadataSummary,
     componentName,
-    elementSpecLines: rootNode ? summarizeElementSpecs(rootNode) : [],
-    textSpecLines: rootNode ? summarizeTextSpecs(rootNode, noteBlocks) : summarizeTextNotes(noteBlocks),
-    assetLines: rootNode ? summarizeAssets(rootNode, componentMap) : summarizeAssetNotes(noteBlocks),
-    noteLines: summarizeNotes(noteBlocks, metadataSummary.notes),
+    rootNode,
+    noteBlocks,
     warningLines: summarizeWarnings({
       codeBlocks,
       rootNode,
@@ -123,34 +53,14 @@ function normalizeStringArray(values) {
 
   return values
     .filter((v) => typeof v === "string")
-    .map((v) => v.trim())
+    .map((v) => stripOuterCodeFence(v).trim())
     .filter((v) => v.length > 0);
 }
 
-function buildNodeSummaryLines(metadataSummary, componentName) {
-  const lines = [];
-
-  if (componentName) {
-    lines.push(`- component: \`${componentName}\``);
-  }
-
-  if (metadataSummary.name) {
-    lines.push(`- name: \`${metadataSummary.name}\``);
-  }
-
-  if (metadataSummary.type) {
-    lines.push(`- type: \`${metadataSummary.type}\``);
-  }
-
-  if (metadataSummary.frame) {
-    lines.push(`- frame: \`${metadataSummary.frame}\``);
-  }
-
-  if (metadataSummary.origin) {
-    lines.push(`- origin: \`${metadataSummary.origin}\``);
-  }
-
-  return lines;
+function stripOuterCodeFence(value) {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^```[A-Za-z0-9_-]*\n([\s\S]*?)\n```$/u);
+  return match ? match[1] : value;
 }
 
 function extractMetadataSummary(metadataBlocks) {
@@ -179,7 +89,7 @@ function extractMetadataSummary(metadataBlocks) {
 }
 
 function parseMetadataXml(block) {
-  const match = block.match(/^<([a-z_]+)\s+([^>]+?)\/?>$/iu);
+  const match = block.trim().match(/^<([a-z_]+)\s+([^>]+?)\/?>/iu);
   if (!match) {
     return null;
   }
@@ -244,7 +154,7 @@ function mergeComponentMaps(codeBlocks, assetMap) {
 
 function extractPrimaryRootNode(codeBlocks, componentMap, assetMap) {
   for (const block of codeBlocks) {
-    const jsx = extractDefaultReturnJsx(block);
+    const jsx = extractDefaultReturnJsx(block) ?? extractStandaloneJsxBlock(block);
     if (!jsx) {
       continue;
     }
@@ -256,6 +166,15 @@ function extractPrimaryRootNode(codeBlocks, componentMap, assetMap) {
   }
 
   return null;
+}
+
+function extractStandaloneJsxBlock(block) {
+  const startIndex = block.search(/<[A-Za-z][A-Za-z0-9_:-]*(?:\s|>|\/>)/u);
+  if (startIndex === -1) {
+    return null;
+  }
+
+  return block.slice(startIndex).trim();
 }
 
 function extractDefaultReturnJsx(block) {
@@ -279,7 +198,7 @@ function extractDefaultComponentName(codeBlocks) {
 function parseJsxTree(jsx, componentMap, assetMap) {
   const roots = [];
   const stack = [];
-  const pattern = /<\/?([A-Za-z][A-Za-z0-9_]*)\b([^>]*)>/gs;
+  const pattern = /<\/?([A-Za-z][A-Za-z0-9_]*)\b((?:"[^"]*"|'[^']*'|\{[^{}]*\}|[^"'{}>])*)>/gs;
   let lastIndex = 0;
   let match;
 
@@ -507,8 +426,8 @@ function summarizeClassTokens(className) {
 
     if (token.startsWith("text-[")) {
       const value = stripBrackets(token.slice(5));
-      if (value.startsWith("color:")) {
-        pushUnique(summary.typography, `color ${describeBracketValue(value.slice(6))}`);
+      if (looksLikeColorValue(value)) {
+        pushUnique(summary.typography, `color ${describeBracketValue(value.startsWith("color:") ? value.slice(6) : value)}`);
       } else {
         pushUnique(summary.typography, `size ${describeBracketValue(value)}`);
       }
@@ -567,6 +486,14 @@ function stripBrackets(value) {
   return value.replace(/^\[/u, "").replace(/\]$/u, "");
 }
 
+function looksLikeColorValue(value) {
+  if (value.startsWith("color:")) {
+    return true;
+  }
+
+  return /^(?:#|rgb\(|rgba\(|hsl\(|hsla\(|var\(|oklch\(|oklab\(|currentColor$)/iu.test(value);
+}
+
 function describeBracketValue(value) {
   const unescaped = value.replaceAll("\\/", "/");
 
@@ -611,374 +538,6 @@ function describeFontToken(value) {
     .replace(":", " ");
 }
 
-function summarizeElementSpecs(rootNode) {
-  const flatNodes = flattenNodes(rootNode).filter((node, index) => isSignificantElementNode(node, index === 0));
-  const grouped = collapseConsecutiveNodes(flatNodes.map(buildElementSummary).filter(Boolean));
-
-  return grouped.map((item) => {
-    const parts = [];
-
-    if (item.count > 1) {
-      parts.push(`- ${item.label} x${item.count}`);
-      if (item.nodeIds.length > 0) {
-        parts.push(`ids ${item.nodeIds.map((nodeId) => `\`${nodeId}\``).join(", ")}`);
-      }
-    } else {
-      parts.push(`- ${item.label}`);
-      if (item.nodeIds[0]) {
-        parts.push(`id \`${item.nodeIds[0]}\``);
-      }
-    }
-
-    if (item.spec) {
-      parts.push(item.spec);
-    }
-
-    return parts.join(" -> ");
-  });
-}
-
-function isSignificantElementNode(node, isRoot) {
-  if (isRoot) {
-    return true;
-  }
-
-  if (node.tag === "img") {
-    return false;
-  }
-
-  if (node.tag === "p") {
-    return false;
-  }
-
-  if (node.assetUrl || node.componentMeta) {
-    return true;
-  }
-
-  if (node.dataName || node.dataNodeId) {
-    return true;
-  }
-
-  if (hasStyleDetails(node.style)) {
-    return true;
-  }
-
-  return false;
-}
-
-function hasStyleDetails(style) {
-  return style.frame.length > 0 ||
-    style.layout.length > 0 ||
-    style.spacing.length > 0 ||
-    style.typography.length > 0 ||
-    style.decoration.length > 0 ||
-    style.extras.length > 0;
-}
-
-function buildElementSummary(node) {
-  const label = formatNodeLabel(node);
-  const styleParts = summarizeStyleParts(node.style);
-  const directText = node.texts.length > 0 ? collapseWhitespace(node.texts.join(" ")) : null;
-  const assetPart = node.assetUrl
-    ? `asset \`${node.srcRef}\` (${compressAssetUrl(node.assetUrl)})`
-    : node.componentMeta?.assetRefs?.length > 0
-      ? `assets ${node.componentMeta.assetRefs.map((asset) => `\`${asset.ref}\``).join(", ")}`
-      : null;
-
-  const specParts = [...styleParts];
-  if (directText) {
-    specParts.push(`text "${directText}"`);
-  }
-  if (assetPart) {
-    specParts.push(assetPart);
-  }
-
-  return {
-    groupKey: `${label}|${specParts.join("|")}`,
-    label,
-    nodeIds: node.dataNodeId ? [node.dataNodeId] : [],
-    spec: specParts.join("; "),
-    count: 1,
-  };
-}
-
-function collapseConsecutiveNodes(items) {
-  const collapsed = [];
-
-  for (const item of items) {
-    const previous = collapsed[collapsed.length - 1];
-    if (previous && previous.groupKey === item.groupKey) {
-      previous.count += 1;
-      previous.nodeIds.push(...item.nodeIds);
-      continue;
-    }
-
-    collapsed.push({
-      ...item,
-      nodeIds: [...item.nodeIds],
-    });
-  }
-
-  return collapsed;
-}
-
-function summarizeStyleParts(style) {
-  const parts = [];
-
-  if (style.frame.length > 0) {
-    parts.push(style.frame.join(", "));
-  }
-
-  if (style.layout.length > 0) {
-    parts.push(style.layout.join(", "));
-  }
-
-  if (style.spacing.length > 0) {
-    parts.push(style.spacing.join(", "));
-  }
-
-  if (style.decoration.length > 0) {
-    parts.push(style.decoration.join(", "));
-  }
-
-  if (style.extras.length > 0) {
-    parts.push(`extra ${style.extras.join(", ")}`);
-  }
-
-  return parts;
-}
-
-function summarizeTextSpecs(rootNode, noteBlocks) {
-  const lines = [];
-  for (const entry of collectTextEntries(rootNode)) {
-    const parts = [`- text "${entry.text}"`];
-
-    if (entry.nodeId) {
-      parts.push(`id \`${entry.nodeId}\``);
-    }
-
-    if (entry.typography.length > 0) {
-      parts.push(`-> ${entry.typography.join(", ")}`);
-    }
-
-    lines.push(parts.join(" "));
-  }
-
-  for (const line of summarizeTextNotes(noteBlocks)) {
-    if (!lines.includes(line)) {
-      lines.push(line);
-    }
-  }
-
-  return lines;
-}
-
-function collectTextEntries(rootNode) {
-  const entries = [];
-
-  walkWithAncestors(rootNode, [], (node, ancestors) => {
-    if (node.texts.length === 0) {
-      return;
-    }
-
-    const typography = mergeTypographyTokens(ancestors.map((item) => item.style.typography));
-    const nodeId = [...ancestors]
-      .reverse()
-      .find((item) => item.dataNodeId)?.dataNodeId ?? null;
-
-    entries.push({
-      text: collapseWhitespace(node.texts.join(" ")),
-      nodeId,
-      typography,
-    });
-  });
-
-  return dedupeBy(entries, (entry) => `${entry.text}|${entry.nodeId ?? ""}|${entry.typography.join("|")}`);
-}
-
-function walkWithAncestors(node, ancestors, visitor) {
-  const nextAncestors = [...ancestors, node];
-  visitor(node, nextAncestors);
-
-  for (const child of node.children) {
-    walkWithAncestors(child, nextAncestors, visitor);
-  }
-}
-
-function mergeTypographyTokens(tokenLists) {
-  const scalar = new Map();
-  const flags = [];
-
-  for (const tokens of tokenLists) {
-    for (const token of tokens) {
-      if (token.startsWith("font ")) {
-        scalar.set("font", token);
-        continue;
-      }
-
-      if (token.startsWith("size ")) {
-        scalar.set("size", token);
-        continue;
-      }
-
-      if (token.startsWith("color ")) {
-        scalar.set("color", token);
-        continue;
-      }
-
-      if (token.startsWith("line ")) {
-        scalar.set("line", token);
-        continue;
-      }
-
-      if (!flags.includes(token)) {
-        flags.push(token);
-      }
-    }
-  }
-
-  // "line 0" appears when Figma emits a leading-[0] class as a reset; it has no typographic meaning.
-  return [...scalar.values(), ...flags].filter((token) => token !== "line 0");
-}
-
-function summarizeTextNotes(noteBlocks) {
-  const lines = [];
-
-  for (const block of noteBlocks) {
-    if (!block.startsWith("These styles are contained in the design:")) {
-      continue;
-    }
-
-    const raw = block.replace("These styles are contained in the design:", "").trim();
-    const typography = parseTypographyNote(raw);
-    if (typography) {
-      lines.push(`- ${typography}`);
-    } else {
-      lines.push(`- typography note: ${raw}`);
-    }
-  }
-
-  return lines;
-}
-
-function parseTypographyNote(note) {
-  const match = note.match(/^([^:]+):\s*Font\(family:\s*"([^"]+)",\s*style:\s*([^,]+),\s*size:\s*([^,]+),\s*weight:\s*([^,]+),\s*lineHeight:\s*([^,]+),\s*letterSpacing:\s*([^)]+)\)\.?$/u);
-  if (!match) {
-    return null;
-  }
-
-  return `${match[1].trim()}: ${match[2]} ${match[3].trim()}, size ${match[4].trim()}, weight ${match[5].trim()}, line ${match[6].trim()}, letter-spacing ${match[7].trim()}`;
-}
-
-function summarizeAssets(rootNode, componentMap) {
-  const items = [];
-
-  for (const node of flattenNodes(rootNode)) {
-    if (node.assetUrl) {
-      items.push({
-        groupKey: `asset|${node.srcRef}|${node.assetUrl}|${node.className ?? ""}`,
-        label: `- \`${node.srcRef}\``,
-        detail: `${compressAssetUrl(node.assetUrl)}${node.className ? `; ${summarizeStyleParts(node.style).join(", ")}` : ""}`,
-      });
-      continue;
-    }
-
-    if (node.componentMeta?.assetRefs?.length > 0) {
-      const refs = node.componentMeta.assetRefs.map((asset) => `\`${asset.ref}\``).join(", ");
-      const groupedUrl = node.componentMeta.assetRefs.map((asset) => compressAssetUrl(asset.url)).join(", ");
-      items.push({
-        groupKey: `component|${node.tag}|${refs}|${node.className ?? ""}`,
-        label: `- ${formatNodeLabel(node)}`,
-        detail: `uses ${refs}; ${groupedUrl}`,
-      });
-    }
-  }
-
-  const collapsed = collapseConsecutiveAssetItems(items);
-  return collapsed.map((item) => `${item.label}${item.count > 1 ? ` x${item.count}` : ""} -> ${item.detail}`);
-}
-
-function collapseConsecutiveAssetItems(items) {
-  const collapsed = [];
-
-  for (const item of items) {
-    const previous = collapsed[collapsed.length - 1];
-    if (previous && previous.groupKey === item.groupKey) {
-      previous.count += 1;
-      continue;
-    }
-
-    collapsed.push({
-      ...item,
-      count: 1,
-    });
-  }
-
-  return collapsed;
-}
-
-function summarizeAssetNotes(noteBlocks) {
-  const lines = [];
-
-  for (const block of noteBlocks) {
-    if (block.startsWith("Image assets are stored on a localhost server.")) {
-      lines.push("- Upstream image and SVG assets may be referenced through the local Figma asset server.");
-    }
-  }
-
-  return lines;
-}
-
-function summarizeNotes(noteBlocks, metadataNotes) {
-  const lines = [];
-
-  for (const block of [...metadataNotes, ...noteBlocks]) {
-    if (looksLikeCode(block) || block.startsWith("These styles are contained in the design:")) {
-      continue;
-    }
-
-    if (block.startsWith("SUPER CRITICAL:")) {
-      lines.push("- Convert upstream React/Tailwind semantics to the target framework and styling system.");
-      for (const line of block.split("\n").slice(1)) {
-        const cleaned = line.replace(/^\d+\.\s*/u, "").trim();
-        if (cleaned) {
-          lines.push(`- ${cleaned}`);
-        }
-      }
-      continue;
-    }
-
-    if (block.startsWith("Node ids have been added to the code as data attributes")) {
-      lines.push("- Upstream node ids are available for traceability.");
-      continue;
-    }
-
-    if (block.startsWith("Image assets are stored on a localhost server.")) {
-      lines.push("- Asset URLs from Figma can be used for inspection or extraction when needed.");
-      continue;
-    }
-
-    if (block.startsWith("IMPORTANT: After you call this tool, you MUST call get_screenshot")) {
-      lines.push("- Screenshot retrieval is recommended when visual confirmation is needed.");
-      continue;
-    }
-
-    lines.push(`- ${collapseWhitespace(block)}`);
-  }
-
-  return dedupe(lines);
-}
-
-function flattenNodes(rootNode) {
-  const nodes = [];
-
-  walk(rootNode, (node) => {
-    nodes.push(node);
-  });
-
-  return nodes;
-}
-
 function walk(node, visitor) {
   visitor(node);
   for (const child of node.children) {
@@ -999,32 +558,6 @@ function collectAssetRefs(rootNode) {
   });
 
   return dedupeBy(refs, (item) => `${item.ref}|${item.url}`);
-}
-
-function formatNodeLabel(node) {
-  if (node.dataName) {
-    return `\`${node.dataName}\``;
-  }
-
-  if (node.componentMeta?.displayName) {
-    return `\`${node.componentMeta.displayName}\``;
-  }
-
-  return `\`${node.tag}\``;
-}
-
-function compressAssetUrl(url) {
-  try {
-    const parsed = new URL(url);
-    const segments = parsed.pathname.split("/");
-    return segments[segments.length - 1] || url;
-  } catch {
-    return url;
-  }
-}
-
-function collapseWhitespace(text) {
-  return text.replace(/\s+/gu, " ").trim();
 }
 
 function pushUnique(list, value) {
@@ -1061,6 +594,9 @@ function escapeRegex(text) {
 // Two-signal heuristic: a block must look like a JS/TS module AND contain JSX-specific markers.
 // This prevents misclassifying prose notes that happen to start with "type" or "const".
 function looksLikeCode(text) {
-  return /(?:^|\n)(?:import |export |const |let |var |function |type |interface )/u.test(text) &&
+  const moduleLikeCode =
+    /(?:^|\n)(?:import |export |const |let |var |function |type |interface )/u.test(text) &&
     /(?:className=|return\s*\(|return\s+|<\w|=>\s*\(|src=)/u.test(text);
+  const jsxOnlyBlock = /^\s*<[A-Za-z][A-Za-z0-9_:-]*(?:\s|>|\/>)/u.test(text);
+  return moduleLikeCode || jsxOnlyBlock;
 }

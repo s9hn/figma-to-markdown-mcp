@@ -13,7 +13,7 @@ function printHelp() {
       "  node scripts/delegate-implementation.js \\",
       "    --figma-url \"https://www.figma.com/design/ExampleFileKey123/Example-File?node-id=123-456&m=dev\" \\",
       "    --target-package \"com.example.feature.preview\" \\",
-      "    --component-name \"ExampleBasicNavi\"",
+      "    --component-name \"ExampleComponent\"",
       "",
     ].join("\n")
   );
