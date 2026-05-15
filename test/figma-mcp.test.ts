@@ -4,6 +4,7 @@ import { getFigmaCompactContext } from "../src/figma-mcp.ts";
 
 interface FakeConnectionOptions {
   designText: string;
+  designByNodeId?: Record<string, string>;
   metadataText?: string;
   metadataByNodeId?: Record<string, string>;
   failMetadata?: string;
@@ -22,6 +23,13 @@ function createFakeConnection(options: FakeConnectionOptions) {
       },
       async callTool(params: { name: string; arguments?: Record<string, unknown> }) {
         if (params.name === "get_design_context") {
+          const nodeId = String(params.arguments?.nodeId ?? "");
+          if (options.designByNodeId && nodeId in options.designByNodeId) {
+            return {
+              content: [{ type: "text", text: options.designByNodeId[nodeId] }],
+            };
+          }
+
           return {
             content: [{ type: "text", text: options.designText }],
           };
@@ -185,6 +193,107 @@ test("getFigmaCompactContext keeps implementation output when metadata fetch fai
   assert.deepEqual(result.trace?.upstreamTools, ["get_design_context"]);
 });
 
+test("getFigmaCompactContext returns fallback when compaction is metadata-only", async () => {
+  const result = await getFigmaCompactContext({
+    figmaUrl: "https://www.figma.com/design/FILE123/Example?node-id=4-5300",
+    runtime: {
+      connectFigmaClient: async () =>
+        createFakeConnection({
+          designText: [
+            "The selected node is a section. No React implementation code was returned.",
+            "Use get_design_context directly if implementation details are needed.",
+          ].join("\n"),
+          metadataText: '<section name="Photo Type" id="4:5300" width="3957" height="1278" x="100" y="7581" />',
+        }),
+    },
+  });
+
+  assert.equal(result.status, "fallback");
+  assert.equal(result.fallback?.recommendedTool, "get_design_context");
+  assert.match(result.summary, /metadata-only/u);
+  assert.match(result.content, /^src\|figma\|get_design_context\|4-5300\|FILE123/mu);
+  assert.match(result.content, /wa\|fallback\|Compaction produced metadata-only context/u);
+  assert.ok(result.stats.rawChars > 0);
+});
+
+test("getFigmaCompactContext returns fallback when compaction only has a root element", async () => {
+  const result = await getFigmaCompactContext({
+    figmaUrl: "https://www.figma.com/design/FILE123/Example?node-id=4-5300",
+    runtime: {
+      connectFigmaClient: async () =>
+        createFakeConnection({
+          designText: "<section></section>",
+          metadataText: [
+            '<section name="Photo Type" id="4:5300" width="3957" height="1278" x="100" y="7581">',
+            '  <text id="4:5301" name="Photo" x="0" y="0" width="40" height="20" />',
+            "</section>",
+          ].join("\n"),
+        }),
+    },
+  });
+
+  assert.equal(result.status, "fallback");
+  assert.match(result.content, /wa\|fallback\|Compaction produced metadata-only context/u);
+});
+
+test("getFigmaCompactContext expands section children and preserves text styles", async () => {
+  const sectionMetadata = [
+    '<section name="Photo Type" id="4:5300" width="1200" height="900" x="0" y="0">',
+    '  <frame id="4:5315" name="Screen A" x="100" y="100" width="375" height="812">',
+    '    <text id="4:5321" name="사진유형" x="20" y="20" width="303" height="22" />',
+    "  </frame>",
+    '  <frame id="4:5327" name="Screen B" x="535" y="100" width="375" height="796">',
+    '    <text id="4:5335" name="직접입력유형(숫자만)" x="20" y="20" width="303" height="24" />',
+    "  </frame>",
+    '  <vector id="4:5491" name="Arrow 1" x="500" y="0" width="120" height="80" />',
+    "</section>",
+  ].join("\n");
+  const screenA = [
+    "export default function ScreenA() {",
+    "  return (",
+    "    <div className=\"bg-[var(--color/neutral/100,#f6f6f6)] relative size-full\" data-node-id=\"4:5315\" data-name=\"Screen A\">",
+    "      <div className=\"bg-[var(--color/neutral/0,white)] rounded-[var(--radius/radius-20,20px)]\" data-node-id=\"4:5319\">",
+    "        <div className=\"font-['Pretendard:Bold',sans-serif] text-[18px] leading-[22px] text-[color:var(--color/neutral/700,#333)]\" data-node-id=\"4:5321\"><p>사진유형</p></div>",
+    "      </div>",
+    "    </div>",
+    "  );",
+    "}",
+  ].join("\n");
+  const screenB = [
+    "export default function ScreenB() {",
+    "  return (",
+    "    <div className=\"bg-[var(--color/neutral/100,#f6f6f6)] relative size-full\" data-node-id=\"4:5327\" data-name=\"Screen B\">",
+    "      <div className=\"font-['Pretendard:SemiBold',sans-serif] text-[20px] leading-[24px] text-[color:var(--color/neutral/700,#333)]\" data-node-id=\"4:5335\"><p>직접입력유형(숫자만)</p></div>",
+    "    </div>",
+    "  );",
+    "}",
+  ].join("\n");
+
+  const result = await getFigmaCompactContext({
+    figmaUrl: "https://www.figma.com/design/FILE123/Example?node-id=4-5300",
+    runtime: {
+      connectFigmaClient: async () =>
+        createFakeConnection({
+          designText: `${sectionMetadata}\n\nIMPORTANT: The user has selected a section node, so you have received a sparse metadata response.`,
+          designByNodeId: {
+            "4-5300": `${sectionMetadata}\n\nIMPORTANT: The user has selected a section node, so you have received a sparse metadata response.`,
+            "4:5315": screenA,
+            "4:5327": screenB,
+          },
+          metadataText: sectionMetadata,
+        }),
+    },
+  });
+
+  assert.equal(result.status, "ok");
+  assert.match(result.content, /el\|4:5315\|screen\|x100;y100;w375;h812;bg:#f6f6f6/u);
+  assert.match(result.content, /tx\|4:5321\|사진유형\|t\d+/u);
+  assert.match(result.content, /tx\|4:5335\|직접입력유형\(숫자만\)\|t\d+/u);
+  assert.match(result.content, /ty\|t\d+\|Pretendard\|700\|18\|22\|#333/u);
+  assert.match(result.content, /ty\|t\d+\|Pretendard\|600\|20\|24\|#333/u);
+  assert.doesNotMatch(result.content, /Arrow 1/u);
+});
+
 test("getFigmaCompactContext returns compact fallback when bridge fetch fails", async () => {
   const result = await getFigmaCompactContext({
     figmaUrl: "https://www.figma.com/design/FILE123/Example?node-id=1-2",
@@ -262,6 +371,39 @@ test("getFigmaCompactContext truncates only when maxOutputChars is explicitly pr
   assert.match(result.warnings.join(","), /truncated/u);
   assert.doesNotMatch(result.content, new RegExp(tailMarker));
   assert.match(result.content, /wa\|truncated\|Output was truncated/u);
+});
+
+test("getFigmaCompactContext warns when metadata text coverage needs supplementation", async () => {
+  const metadataText = [
+    '<frame name="Tall Screen" id="20:1" width="375" height="2400" x="0" y="0">',
+    '  <text id="20:2" name="Top Field" x="16" y="80" width="343" height="20" />',
+    '  <text id="20:3" name="Middle Field" x="16" y="1200" width="343" height="20" />',
+    '  <text id="20:4" name="Bottom Attachment Field" x="16" y="2200" width="343" height="20" />',
+    "</frame>",
+  ].join("\n");
+  const result = await getFigmaCompactContext({
+    figmaUrl: "https://www.figma.com/design/FILE123/Example?node-id=20-1",
+    runtime: {
+      connectFigmaClient: async () =>
+        createFakeConnection({
+          designText: [
+            "export default function TallScreen() {",
+            "  return (",
+            "    <div data-node-id=\"20:1\" data-name=\"Tall Screen\" className=\"flex flex-col bg-[var(--color/neutral/0,white)]\">",
+            "      <div data-node-id=\"20:2\" className=\"font-['Inter:Regular',sans-serif] text-[16px] leading-[20px] text-[color:var(--color/neutral/700,#333)]\"><p>Top Field</p></div>",
+            "    </div>",
+            "  );",
+            "}",
+          ].join("\n"),
+          metadataText,
+        }),
+    },
+  });
+
+  assert.equal(result.status, "ok");
+  assert.match(result.content, /mtx\|20:4\|Bottom Attachment Field\|16,2200,343,20/u);
+  assert.match(result.content, /mq\|text_coverage\|1\/3\|supplemented:2\/2/u);
+  assert.match(result.warnings.join(","), /text_coverage_supplemented/u);
 });
 
 test("getFigmaCompactContext flags likely partial nodes from metadata diagnostics", async () => {

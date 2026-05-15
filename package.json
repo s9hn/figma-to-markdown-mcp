@@ -1,6 +1,6 @@
 {
   "name": "figma-compaction-mcp",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "MCP bridge that prunes Figma design context into compact plain-text context for agents",
   "type": "module",
   "main": "dist/index.js",

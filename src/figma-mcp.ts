@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { serializeDesignContextToCompactContext } from "./compact-context.js";
 
 const DEFAULT_FIGMA_MCP_URL = "http://127.0.0.1:3845/mcp";
+const SECTION_CHILD_CONTEXT_LIMIT = 8;
 const INTERNAL_CLIENT_INFO = {
   name: "figma-compaction-internal-client",
   version: "3.0.0",
@@ -91,6 +92,14 @@ interface MetadataNode {
   x: number | null;
   y: number | null;
   children: MetadataNode[];
+}
+
+interface ExpansionCandidate {
+  nodeId: string;
+  name?: string;
+  type: string;
+  width?: number;
+  height?: number;
 }
 
 function hasTerminateSession(
@@ -433,7 +442,7 @@ function createMetadataNode(type: string, attrs: string): MetadataNode {
 function parseMetadataTree(block: string): MetadataNode | null {
   const roots: MetadataNode[] = [];
   const stack: MetadataNode[] = [];
-  const pattern = /<\/?([a-z_]+)\b([^>]*)>/giu;
+  const pattern = /<\/?([a-z][a-z0-9_-]*)\b([^>]*)>/giu;
   let match: RegExpExecArray | null;
 
   while ((match = pattern.exec(block)) !== null) {
@@ -560,6 +569,118 @@ function analyzeNodeDiagnostics(metadataBlocks: string[]): NodeDiagnostics | und
   }
 
   return undefined;
+}
+
+function looksLikeSparseContainerContext(contentBlocks: string[], diagnostics: NodeDiagnostics | undefined): boolean {
+  if (diagnostics?.type === "section") {
+    return true;
+  }
+
+  return contentBlocks.some((block) =>
+    /selected a section node|sparse metadata response|call get_design_context on the nodes or their sublayers individually/iu.test(block)
+  );
+}
+
+function collectExpansionCandidates(metadataBlocks: string[], limit: number): ExpansionCandidate[] {
+  const candidates: ExpansionCandidate[] = [];
+  const seen = new Set<string>();
+
+  for (const block of metadataBlocks) {
+    const root = parseMetadataTree(block);
+    if (!root) {
+      continue;
+    }
+
+    for (const child of root.children) {
+      if (!shouldFetchChildDesignContext(child)) {
+        continue;
+      }
+
+      if (!child.id || seen.has(child.id)) {
+        continue;
+      }
+
+      seen.add(child.id);
+      candidates.push({
+        nodeId: child.id,
+        name: child.name ?? undefined,
+        type: child.type,
+        width: child.width ?? undefined,
+        height: child.height ?? undefined,
+      });
+
+      if (candidates.length >= limit) {
+        return candidates;
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function shouldFetchChildDesignContext(node: MetadataNode): boolean {
+  if (!node.id || !["frame", "instance", "component", "component-set", "section"].includes(node.type)) {
+    return false;
+  }
+
+  const label = `${node.name ?? ""} ${node.type}`.toLowerCase();
+  if (
+    label.includes("design guide") ||
+    label.includes("guide note") ||
+    label.includes("arrow") ||
+    label.includes("status bar")
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+async function fetchExpandedDesignContextBlocks(
+  client: FigmaMcpClientLike,
+  designTool: ToolDefinition | undefined,
+  parsed: ParsedFigmaUrl,
+  metadataBlocks: string[],
+  contentBlocks: string[],
+  diagnostics: NodeDiagnostics | undefined
+): Promise<{ blocks: string[]; candidates: ExpansionCandidate[]; failed: string[] }> {
+  if (!looksLikeSparseContainerContext(contentBlocks, diagnostics)) {
+    return { blocks: [], candidates: [], failed: [] };
+  }
+
+  const candidates = collectExpansionCandidates(
+    [...metadataBlocks, ...contentBlocks],
+    SECTION_CHILD_CONTEXT_LIMIT
+  );
+  const blocks: string[] = [];
+  const fetched: ExpansionCandidate[] = [];
+  const failed: string[] = [];
+
+  for (const candidate of candidates) {
+    try {
+      const args = buildToolArgs(designTool, { ...parsed, nodeId: candidate.nodeId });
+      const result = await callToolWithFallback(
+        client,
+        designTool,
+        "get_design_context",
+        args
+      );
+      const childBlocks = extractToolTextBlocks(result).filter(
+        (block) => !/selected a section node|sparse metadata response/iu.test(block)
+      );
+      if (childBlocks.length === 0) {
+        failed.push(candidate.nodeId);
+        continue;
+      }
+
+      blocks.push(...childBlocks);
+      fetched.push(candidate);
+    } catch {
+      failed.push(candidate.nodeId);
+    }
+  }
+
+  return { blocks, candidates: fetched, failed };
 }
 
 function findMetadataPath(root: MetadataNode, targetNodeId: string): MetadataNode[] | null {
@@ -910,7 +1031,8 @@ function buildCompactFallbackResult(
   figmaMcpUrl: string,
   reason: string,
   mode: CompactMode,
-  task: CompactTask
+  task: CompactTask,
+  rawChars = 0
 ): GetFigmaCompactContextResult {
   const suggestedCalls = buildSuggestedUpstreamToolCalls(parsed);
   const fallback: CompactContextFallback = {
@@ -932,8 +1054,9 @@ function buildCompactFallbackResult(
     summary: `Fallback required: ${reason}`,
     content,
     stats: {
-      rawChars: 0,
+      rawChars,
       compactChars: content.length,
+      reductionPct: calculateReductionPct(rawChars, content.length),
     },
     trace: parsed.nodeId ? {
       figmaUrl: parsed.figmaUrl,
@@ -944,6 +1067,44 @@ function buildCompactFallbackResult(
     warnings: ["fallback"],
     fallback,
   };
+}
+
+function hasImplementationPayload(compactText: string): boolean {
+  return compactText
+    .split(/\n/u)
+    .some((line) => {
+      if (/^(?:tx|ty|as)\|/u.test(line)) {
+        return true;
+      }
+
+      const elementMatch = line.match(/^el\|[^|]*\|[^|]*\|(.+)$/u);
+      return Boolean(elementMatch && elementMatch[1] !== "root");
+    });
+}
+
+function detectTextCoverageWarning(compactText: string): string | null {
+  const coverageLine = compactText
+    .split(/\n/u)
+    .find((line) => line.startsWith("mq|text_coverage|"));
+  if (!coverageLine) {
+    return null;
+  }
+
+  const [, , ratio, state] = coverageLine.split("|");
+  if (!ratio || !state?.startsWith("supplemented:")) {
+    return null;
+  }
+
+  const [parsedTextCount, metadataTextCount] = ratio.split("/").map((value) => Number(value));
+  if (!Number.isFinite(parsedTextCount) || !Number.isFinite(metadataTextCount)) {
+    return null;
+  }
+
+  if (metadataTextCount <= 0) {
+    return null;
+  }
+
+  return parsedTextCount / metadataTextCount < 0.8 ? "text_coverage_supplemented" : null;
 }
 
 async function prepareBridgeContext(
@@ -973,7 +1134,7 @@ async function prepareBridgeContext(
       "get_design_context",
       baseArgs
     );
-    const contentBlocks = extractToolTextBlocks(designResult);
+    let contentBlocks = extractToolTextBlocks(designResult);
     if (contentBlocks.length === 0) {
       throw new Error("Upstream Figma MCP returned no usable text design context for compaction.");
     }
@@ -1001,11 +1162,32 @@ async function prepareBridgeContext(
       }
     }
 
+    const filteredMetadataBlocks = filterMetadataBlocks(metadataBlocks);
+    let nodeDiagnostics = analyzeNodeDiagnostics(filteredMetadataBlocks);
+
+    const expanded = await fetchExpandedDesignContextBlocks(
+      connection.client,
+      designTool,
+      parsed,
+      filteredMetadataBlocks,
+      contentBlocks,
+      nodeDiagnostics
+    );
+    if (expanded.blocks.length > 0) {
+      contentBlocks = [...contentBlocks, ...expanded.blocks];
+      notes.push(
+        `Expanded sparse container context by fetching ${expanded.candidates.length} child design context${expanded.candidates.length === 1 ? "" : "s"}: ${expanded.candidates
+          .map((candidate) => `${candidate.name ?? candidate.type}${candidate.nodeId ? ` [${candidate.nodeId}]` : ""}`)
+          .join(", ")}.`
+      );
+    }
+    if (expanded.failed.length > 0) {
+      notes.push(`Some child design context fetches failed: ${expanded.failed.join(", ")}.`);
+    }
+
     const designRaw = contentBlocks.join("\n\n");
     const metadataRaw = metadataBlocks.join("\n\n");
     const rawChars = metadataRaw.length + designRaw.length;
-    const filteredMetadataBlocks = filterMetadataBlocks(metadataBlocks);
-    let nodeDiagnostics = analyzeNodeDiagnostics(filteredMetadataBlocks);
 
     if (nodeDiagnostics?.looksPartial) {
       nodeDiagnostics = await enrichParentCandidates(
@@ -1095,13 +1277,27 @@ export async function getFigmaCompactContext(
         figmaMcpUrl,
         "Compaction produced no usable design context.",
         mode,
-        task
+        task,
+        prepared.rawChars
+      );
+    }
+
+    if (!hasImplementationPayload(compactBase)) {
+      return buildCompactFallbackResult(
+        parsed,
+        figmaMcpUrl,
+        "Compaction produced metadata-only context with no implementation payload lines.",
+        mode,
+        task,
+        prepared.rawChars
       );
     }
 
     const truncatedCompact = truncateCompactDocument(compactBase, options.maxOutputChars);
+    const textCoverageWarning = detectTextCoverageWarning(truncatedCompact.text);
     const warnings = [
       ...(prepared.nodeDiagnostics?.looksPartial ? ["partial_node"] : []),
+      ...(textCoverageWarning ? [textCoverageWarning] : []),
       ...(truncatedCompact.truncated ? ["truncated"] : []),
     ];
     const compactStatus: BridgeStatus = prepared.nodeDiagnostics?.looksPartial

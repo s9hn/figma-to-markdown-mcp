@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.1] - 2026-05-15
+
+### Fixed
+
+- Supplemented compact output with metadata-derived text samples across tall screens so lower design cases remain visible after compaction.
+- Added text coverage quality markers and warnings when compact output needs metadata text supplementation.
+- Added fallback protection for metadata-only compact results that do not contain usable implementation payload lines.
+- Expanded sparse section responses by fetching eligible child design contexts before compaction.
+
+### Validation
+
+- `npm test`
+- `npm run build`
+- Live token audit for node `4:4377`: 52,738 raw tokens to 3,823 compact tokens, 92.75% reduction.
+
 ## [3.0.0] - 2026-04-30
 
 ### Breaking Changes

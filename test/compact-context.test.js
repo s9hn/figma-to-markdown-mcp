@@ -52,6 +52,38 @@ test("serializeDesignContextToCompactContext emits compact DSL lines with tracea
   assert.doesNotMatch(compact, /export default function/u);
 });
 
+test("serializeDesignContextToCompactContext supplements missing metadata text across tall screens", () => {
+  const compact = serializeDesignContextToCompactContext({
+    fileKey: "ExampleFileKey123",
+    nodeId: "10:1",
+    contentBlocks: [
+      [
+        "export default function TallScreen() {",
+        "  return (",
+        "    <div data-node-id=\"10:1\" data-name=\"Tall Screen\" className=\"flex flex-col bg-[var(--color/neutral/0,white)]\">",
+        "      <div data-node-id=\"10:2\" className=\"font-['Inter:Regular',sans-serif] text-[16px] leading-[20px] text-[color:var(--color/neutral/700,#333)]\"><p>Top Field</p></div>",
+        "    </div>",
+        "  );",
+        "}",
+      ].join("\n"),
+    ],
+    metadataBlocks: [
+      [
+        '<frame name="Tall Screen" id="10:1" width="375" height="2400" x="0" y="0">',
+        '  <text id="10:2" name="Top Field" x="16" y="80" width="343" height="20" />',
+        '  <text id="10:3" name="Middle Field" x="16" y="1200" width="343" height="20" />',
+        '  <text id="10:4" name="Bottom Attachment Field" x="16" y="2200" width="343" height="20" />',
+        "</frame>",
+      ].join("\n"),
+    ],
+  });
+
+  assert.match(compact, /tx\|10:2\|Top Field\|t1/u);
+  assert.match(compact, /mtx\|10:3\|Middle Field\|16,1200,343,20/u);
+  assert.match(compact, /mtx\|10:4\|Bottom Attachment Field\|16,2200,343,20/u);
+  assert.match(compact, /mq\|text_coverage\|1\/3\|supplemented:2\/2/u);
+});
+
 test("serializeDesignContextToCompactContext rejects missing identifiers or empty content", () => {
   assert.throws(
     () => serializeDesignContextToCompactContext({

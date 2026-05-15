@@ -4,30 +4,36 @@ const VOID_TAGS = new Set(["img", "input", "br", "hr", "meta", "link"]);
 export function analyzeDesignContext({ contentBlocks, metadataBlocks }) {
   const codeBlocks = [];
   const noteBlocks = [];
+  const metadataLikeBlocks = [];
 
   for (const block of contentBlocks) {
-    if (looksLikeCode(block)) {
+    if (looksLikeFigmaMetadataXml(block)) {
+      metadataLikeBlocks.push(block);
+      noteBlocks.push(block);
+    } else if (looksLikeCode(block)) {
       codeBlocks.push(block);
     } else {
       noteBlocks.push(block);
     }
   }
 
-  const metadataSummary = extractMetadataSummary(metadataBlocks);
+  const metadata = extractMetadata([...metadataBlocks, ...metadataLikeBlocks]);
   const assetMap = mergeAssetMaps(codeBlocks);
   const componentMap = mergeComponentMaps(codeBlocks, assetMap);
-  const rootNode = extractPrimaryRootNode(codeBlocks, componentMap, assetMap);
+  const rootNodes = extractRootNodes(codeBlocks, componentMap, assetMap, metadata.byId);
+  const rootNode = rootNodes[0] ?? null;
   const componentName = extractDefaultComponentName(codeBlocks);
 
   return {
-    metadataSummary,
+    metadataSummary: metadata.summary,
     componentName,
     rootNode,
+    rootNodes,
     noteBlocks,
     warningLines: summarizeWarnings({
       codeBlocks,
       rootNode,
-      metadataSummary,
+      metadataSummary: metadata.summary,
     }),
   };
 }
@@ -63,7 +69,7 @@ function stripOuterCodeFence(value) {
   return match ? match[1] : value;
 }
 
-function extractMetadataSummary(metadataBlocks) {
+function extractMetadata(metadataBlocks) {
   const summary = {
     type: null,
     name: null,
@@ -71,8 +77,14 @@ function extractMetadataSummary(metadataBlocks) {
     origin: null,
     notes: [],
   };
+  const byId = new Map();
 
   for (const block of metadataBlocks) {
+    const root = parseMetadataTree(block);
+    if (root) {
+      collectMetadataById(root, byId);
+    }
+
     const xml = parseMetadataXml(block);
     if (xml) {
       summary.type ??= xml.type;
@@ -85,11 +97,14 @@ function extractMetadataSummary(metadataBlocks) {
     summary.notes.push(block);
   }
 
-  return summary;
+  return {
+    summary,
+    byId,
+  };
 }
 
 function parseMetadataXml(block) {
-  const match = block.trim().match(/^<([a-z_]+)\s+([^>]+?)\/?>/iu);
+  const match = block.trim().match(/^<([a-z][a-z0-9_-]*)\s+([^>]+?)\/?>/iu);
   if (!match) {
     return null;
   }
@@ -112,6 +127,75 @@ function parseMetadataXml(block) {
     frame: width && height ? `${width} x ${height}` : null,
     origin: x && y ? `x ${x}, y ${y}` : null,
   };
+}
+
+function parseMetadataTree(block) {
+  const roots = [];
+  const stack = [];
+  const pattern = /<\/?([a-z][a-z0-9_-]*)\b([^>]*)>/giu;
+  let match;
+
+  while ((match = pattern.exec(block)) !== null) {
+    const rawTag = match[0];
+    const type = match[1].toLowerCase();
+    const attrs = match[2] ?? "";
+
+    if (rawTag.startsWith("</")) {
+      while (stack.length > 0) {
+        const current = stack.pop();
+        if (current?.type === type) {
+          break;
+        }
+      }
+      continue;
+    }
+
+    const node = createMetadataNode(type, attrs);
+    if (stack.length > 0) {
+      stack[stack.length - 1].children.push(node);
+    } else {
+      roots.push(node);
+    }
+
+    if (!rawTag.endsWith("/>")) {
+      stack.push(node);
+    }
+  }
+
+  return roots[0] ?? null;
+}
+
+function createMetadataNode(type, attrs) {
+  return {
+    type,
+    id: extractQuotedAttribute(attrs, "id"),
+    name: extractQuotedAttribute(attrs, "name"),
+    x: parseNumericAttribute(attrs, "x"),
+    y: parseNumericAttribute(attrs, "y"),
+    width: parseNumericAttribute(attrs, "width"),
+    height: parseNumericAttribute(attrs, "height"),
+    children: [],
+  };
+}
+
+function parseNumericAttribute(attrs, name) {
+  const value = extractQuotedAttribute(attrs, name);
+  if (value === null) {
+    return null;
+  }
+
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function collectMetadataById(root, byId) {
+  if (root.id) {
+    byId.set(root.id, root);
+  }
+
+  for (const child of root.children) {
+    collectMetadataById(child, byId);
+  }
 }
 
 function mergeAssetMaps(codeBlocks) {
@@ -152,7 +236,9 @@ function mergeComponentMaps(codeBlocks, assetMap) {
   return componentMap;
 }
 
-function extractPrimaryRootNode(codeBlocks, componentMap, assetMap) {
+function extractRootNodes(codeBlocks, componentMap, assetMap, metadataById) {
+  const rootNodes = [];
+
   for (const block of codeBlocks) {
     const jsx = extractDefaultReturnJsx(block) ?? extractStandaloneJsxBlock(block);
     if (!jsx) {
@@ -161,11 +247,12 @@ function extractPrimaryRootNode(codeBlocks, componentMap, assetMap) {
 
     const rootNode = parseJsxTree(jsx, componentMap, assetMap);
     if (rootNode) {
-      return rootNode;
+      applyMetadata(rootNode, metadataById);
+      rootNodes.push(rootNode);
     }
   }
 
-  return null;
+  return dedupeBy(rootNodes, (rootNode) => rootNode.dataNodeId ?? rootNode.dataName ?? rootNode.tag);
 }
 
 function extractStandaloneJsxBlock(block) {
@@ -240,16 +327,27 @@ function createNode(tag, attrs, componentMap, assetMap) {
 
   return {
     tag,
-    dataNodeId: extractQuotedAttribute(attrs, "data-node-id") ?? componentMeta?.nodeId ?? null,
-    dataName: extractQuotedAttribute(attrs, "data-name") ?? componentMeta?.displayName ?? null,
+    dataNodeId: extractQuotedAttribute(attrs, "data-node-id") ?? extractQuotedAttribute(attrs, "id") ?? componentMeta?.nodeId ?? null,
+    dataName: extractQuotedAttribute(attrs, "data-name") ?? extractQuotedAttribute(attrs, "name") ?? componentMeta?.displayName ?? null,
     className,
     style: summarizeClassTokens(className),
     srcRef,
     assetUrl: srcRef ? assetMap.get(srcRef) ?? null : null,
     componentMeta,
+    metadata: null,
     texts: [],
     children: [],
   };
+}
+
+function applyMetadata(node, metadataById) {
+  if (node.dataNodeId && metadataById.has(node.dataNodeId)) {
+    node.metadata = metadataById.get(node.dataNodeId);
+  }
+
+  for (const child of node.children) {
+    applyMetadata(child, metadataById);
+  }
 }
 
 function extractQuotedAttribute(attrs, name) {
@@ -599,4 +697,17 @@ function looksLikeCode(text) {
     /(?:className=|return\s*\(|return\s+|<\w|=>\s*\(|src=)/u.test(text);
   const jsxOnlyBlock = /^\s*<[A-Za-z][A-Za-z0-9_:-]*(?:\s|>|\/>)/u.test(text);
   return moduleLikeCode || jsxOnlyBlock;
+}
+
+function looksLikeFigmaMetadataXml(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!/^<(?:section|frame|instance|text|vector|rounded-rectangle)\b/iu.test(trimmed)) {
+    return false;
+  }
+
+  return (
+    !/className=/u.test(trimmed) &&
+    !/data-node-id=/u.test(trimmed) &&
+    !/(?:^|\n)(?:import |export |const |let |var |function )/u.test(trimmed)
+  );
 }

@@ -2,6 +2,7 @@ import { analyzeDesignContext } from "./design-context-analyzer.js";
 
 const DEFAULT_MODE = "balanced";
 const DEFAULT_TASK = "implement";
+const METADATA_TEXT_SUPPLEMENT_LIMIT = 18;
 const CHROME_LABELS = new Set([
   "status bar",
   "header bar",
@@ -52,39 +53,61 @@ export function serializeDesignContextToCompactContext(options) {
     `sum|${sanitizeValue(summaryName)}|${sanitizeValue(summaryType)}|${summaryFrame}|${summaryOrigin}`
   );
 
-  if (analysis.rootNode) {
-    for (const elementLine of buildElementLines(analysis.rootNode, {
+  const rootNodes = Array.isArray(analysis.rootNodes) && analysis.rootNodes.length > 0
+    ? analysis.rootNodes
+    : analysis.rootNode
+      ? [analysis.rootNode]
+      : [];
+
+  if (includeTextSpecs && rootNodes.length > 0) {
+    const textPayload = buildTextPayload(rootNodes, {
       includeTraceIds,
       mode,
       task,
-    })) {
-      lines.push(elementLine);
+    });
+
+    for (const textLine of textPayload.textLines) {
+      lines.push(textLine);
     }
 
-    if (includeTextSpecs) {
-      const textPayload = buildTextPayload(analysis.rootNode, {
+    if (mode !== "minimal") {
+      const metadataTextPayload = buildMetadataTextPayload(metadataBlocks, textPayload.entries, {
         includeTraceIds,
-        mode,
-        task,
       });
 
-      for (const textLine of textPayload.textLines) {
-        lines.push(textLine);
+      for (const metadataTextLine of metadataTextPayload.textLines) {
+        lines.push(metadataTextLine);
       }
 
-      for (const typographyLine of textPayload.typographyLines) {
-        lines.push(typographyLine);
+      if (metadataTextPayload.qualityLine) {
+        lines.push(metadataTextPayload.qualityLine);
       }
     }
 
+    for (const typographyLine of textPayload.typographyLines) {
+      lines.push(typographyLine);
+    }
+  }
+
+  for (const rootNode of rootNodes) {
     if (includeAssets) {
-      for (const assetLine of buildAssetLines(analysis.rootNode, {
+      for (const assetLine of buildAssetLines(rootNode, {
         includeTraceIds,
         mode,
         task,
       })) {
         lines.push(assetLine);
       }
+    }
+  }
+
+  for (const rootNode of rootNodes) {
+    for (const elementLine of buildElementLines(rootNode, {
+      includeTraceIds,
+      mode,
+      task,
+    })) {
+      lines.push(elementLine);
     }
   }
 
@@ -161,15 +184,20 @@ function isChromeNode(node) {
 
 function buildElementProps(node, isRoot) {
   const props = [];
+  const metadataInfo = parseMetadataInfo(node.metadata);
   const frameInfo = parseFrameTokens(node.style.frame);
   const layoutInfo = parseLayoutTokens(node.style.layout);
   const spacingInfo = parseSpacingTokens(node.style.spacing);
   const decorationInfo = parseDecorationTokens(node.style.decoration);
   const radiusInfo = parseRadiusTokens(node.style.extras);
 
-  if (frameInfo.width) props.push(`w${frameInfo.width}`);
-  if (frameInfo.height) props.push(`h${frameInfo.height}`);
-  if (frameInfo.size) props.push(`size${frameInfo.size}`);
+  if (metadataInfo.x !== null) props.push(`x${formatNumber(metadataInfo.x)}`);
+  if (metadataInfo.y !== null) props.push(`y${formatNumber(metadataInfo.y)}`);
+  if (frameInfo.width) props.push(`w${formatNumber(frameInfo.width)}`);
+  if (!frameInfo.width && metadataInfo.width !== null) props.push(`w${formatNumber(metadataInfo.width)}`);
+  if (frameInfo.height) props.push(`h${formatNumber(frameInfo.height)}`);
+  if (!frameInfo.height && metadataInfo.height !== null) props.push(`h${formatNumber(metadataInfo.height)}`);
+  if (frameInfo.size) props.push(`size${formatNumber(frameInfo.size)}`);
   if (layoutInfo.layout) props.push(`layout:${layoutInfo.layout}`);
   if (layoutInfo.gap) props.push(`gap:${layoutInfo.gap}`);
   if (layoutInfo.items) props.push(`items:${layoutInfo.items}`);
@@ -191,8 +219,38 @@ function buildElementProps(node, isRoot) {
   return props;
 }
 
-function buildTextPayload(rootNode, options) {
-  const entries = collectTextEntries(rootNode)
+function parseMetadataInfo(metadata) {
+  return {
+    x: parseFiniteNumber(metadata?.x),
+    y: parseFiniteNumber(metadata?.y),
+    width: parseFiniteNumber(metadata?.width),
+    height: parseFiniteNumber(metadata?.height),
+  };
+}
+
+function parseFiniteNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function parseNullableNumber(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function extractQuotedAttribute(attrs, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const direct = attrs.match(new RegExp(`${escapedName}\\s*=\\s*"([^"]*)"`, "su"));
+  return direct?.[1] ?? null;
+}
+
+function buildTextPayload(rootNodes, options) {
+  const entries = rootNodes
+    .flatMap((rootNode) => collectTextEntries(rootNode))
     .filter((entry) => entry.text !== "")
     .filter((entry) => {
       if (options.task === "inspect") {
@@ -227,7 +285,109 @@ function buildTextPayload(rootNode, options) {
   return {
     textLines: dedupe(textLines),
     typographyLines,
+    entries,
   };
+}
+
+function buildMetadataTextPayload(metadataBlocks, parsedTextEntries, options) {
+  const metadataTextEntries = collectMetadataTextEntries(metadataBlocks);
+  if (metadataTextEntries.length === 0) {
+    return { textLines: [], qualityLine: null };
+  }
+
+  const parsedIds = new Set(
+    parsedTextEntries
+      .map((entry) => entry.nodeId)
+      .filter((nodeId) => typeof nodeId === "string" && nodeId.length > 0)
+  );
+  const parsedTexts = new Set(parsedTextEntries.map((entry) => entry.text));
+  const missingEntries = metadataTextEntries.filter((entry) => {
+    if (entry.id && parsedIds.has(entry.id)) {
+      return false;
+    }
+
+    return !parsedTexts.has(entry.text);
+  });
+
+  if (missingEntries.length === 0) {
+    return {
+      textLines: [],
+      qualityLine: `mq|text_coverage|${parsedTextEntries.length}/${metadataTextEntries.length}|complete`,
+    };
+  }
+
+  const sampledEntries = sampleAcrossVerticalRange(missingEntries, METADATA_TEXT_SUPPLEMENT_LIMIT);
+  const textLines = sampledEntries.map((entry) => {
+    const id = options.includeTraceIds ? sanitizeValue(entry.id ?? "-") : "-";
+    const frame = [entry.x, entry.y, entry.width, entry.height]
+      .map((value) => value === null ? "-" : formatNumber(value))
+      .join(",");
+    return `mtx|${id}|${sanitizeValue(entry.text)}|${frame}`;
+  });
+
+  return {
+    textLines: dedupe(textLines),
+    qualityLine: `mq|text_coverage|${parsedTextEntries.length}/${metadataTextEntries.length}|supplemented:${sampledEntries.length}/${missingEntries.length}`,
+  };
+}
+
+function collectMetadataTextEntries(metadataBlocks) {
+  const entries = [];
+
+  for (const block of metadataBlocks) {
+    const pattern = /<text\b([^>]*)\/?>/giu;
+    let match;
+    while ((match = pattern.exec(block)) !== null) {
+      const attrs = match[1] ?? "";
+      const text = decodeEntities(extractQuotedAttribute(attrs, "name") ?? "").trim();
+      if (text === "") {
+        continue;
+      }
+
+      entries.push({
+        id: extractQuotedAttribute(attrs, "id"),
+        text: collapseWhitespace(text),
+        x: parseNullableNumber(extractQuotedAttribute(attrs, "x")),
+        y: parseNullableNumber(extractQuotedAttribute(attrs, "y")),
+        width: parseNullableNumber(extractQuotedAttribute(attrs, "width")),
+        height: parseNullableNumber(extractQuotedAttribute(attrs, "height")),
+      });
+    }
+  }
+
+  return dedupeBy(entries, (entry) => `${entry.id ?? ""}|${entry.text}|${entry.x ?? ""}|${entry.y ?? ""}`);
+}
+
+function sampleAcrossVerticalRange(entries, limit) {
+  if (entries.length <= limit) {
+    return entries;
+  }
+
+  const sorted = [...entries].sort((a, b) => {
+    const ay = a.y ?? Number.POSITIVE_INFINITY;
+    const by = b.y ?? Number.POSITIVE_INFINITY;
+    if (ay !== by) {
+      return ay - by;
+    }
+
+    return (a.x ?? 0) - (b.x ?? 0);
+  });
+  const selected = [];
+  const selectedKeys = new Set();
+
+  for (let index = 0; index < limit; index += 1) {
+    const sourceIndex = Math.round((index * (sorted.length - 1)) / (limit - 1));
+    const entry = sorted[sourceIndex];
+    const key = `${entry.id ?? ""}|${entry.text}|${entry.x ?? ""}|${entry.y ?? ""}`;
+    if (selectedKeys.has(key)) {
+      continue;
+    }
+
+    selectedKeys.add(key);
+    selected.push(entry);
+  }
+
+  return selected;
 }
 
 function buildAssetLines(rootNode, options) {
@@ -564,6 +724,14 @@ function mapFontWeight(style) {
 function parseCssNumber(value) {
   const match = String(value).match(/-?\d+(?:\.\d+)?/u);
   return match ? Number(match[0]) : 0;
+}
+
+function formatNumber(value) {
+  if (!Number.isFinite(value)) {
+    return value;
+  }
+
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3)));
 }
 
 function extractColor(value) {
